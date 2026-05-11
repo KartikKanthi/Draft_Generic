@@ -98,7 +98,9 @@ function render() {
 }
 
 function renderWaiting() {
-  document.getElementById('draft-id-code').textContent = DRAFT_ID;
+  const joinUrl = `${location.origin}/?join=${DRAFT_ID}`;
+  const codeEl = document.getElementById('draft-id-code');
+  codeEl.innerHTML = `<a href="${joinUrl}" target="_blank" style="color:var(--primary)">${joinUrl}</a>`;
   document.getElementById('teams-count').textContent = state.teams.length;
   document.getElementById('teams-needed').textContent = state.num_teams;
 
@@ -615,7 +617,8 @@ document.getElementById('toggle-view-btn')?.addEventListener('click', () => {
 
 // ── Copy Draft ID ─────────────────────────────────────────────────────────────
 function copyDraftId() {
-  navigator.clipboard.writeText(DRAFT_ID).then(() => toast('Draft ID copied!', 'success'));
+  const joinUrl = `${location.origin}/?join=${DRAFT_ID}`;
+  navigator.clipboard.writeText(joinUrl).then(() => toast('Join link copied!', 'success'));
 }
 document.getElementById('copy-id-btn')?.addEventListener('click', copyDraftId);
 document.getElementById('copy-id-btn-waiting')?.addEventListener('click', copyDraftId);
