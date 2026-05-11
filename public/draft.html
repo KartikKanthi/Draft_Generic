@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Draft Room</title>
+  <link rel="stylesheet" href="/css/style.css">
+</head>
+<body class="draft-page">
+
+  <!-- Header -->
+  <header class="draft-header">
+    <div class="header-left">
+      <a href="/" class="back-link">← Home</a>
+      <h1 id="draft-name">Loading…</h1>
+      <span class="badge" id="format-badge"></span>
+      <span class="badge" id="mode-badge"></span>
+      <span class="badge" id="status-badge"></span>
+    </div>
+    <div class="header-right">
+      <span id="pick-counter"></span>
+      <button class="btn btn-sm" id="copy-id-btn">Copy Draft ID</button>
+    </div>
+  </header>
+
+  <!-- Waiting Room -->
+  <div id="waiting-room" style="display:none">
+    <div class="waiting-content">
+      <h2>Waiting for draft to start…</h2>
+      <p>Share this Draft ID with everyone joining:</p>
+      <div class="draft-id-box">
+        <code id="draft-id-code"></code>
+        <button class="btn btn-sm" id="copy-id-btn-waiting">Copy</button>
+      </div>
+
+      <div class="waiting-section">
+        <h3>Teams Joined (<span id="teams-count">0</span> / <span id="teams-needed">?</span>)</h3>
+        <div class="teams-waiting-grid" id="teams-waiting-grid"></div>
+      </div>
+
+      <!-- Commissioner-only controls -->
+      <div id="commissioner-waiting" style="display:none">
+        <div class="waiting-section">
+          <h3>Player Pool</h3>
+          <div class="upload-row">
+            <input type="file" id="upload-csv" accept=".csv">
+            <button class="btn" id="upload-csv-btn">Upload CSV</button>
+            <span id="player-count-badge"></span>
+          </div>
+        </div>
+        <button class="btn btn-success btn-full" id="start-draft-btn">Start Draft →</button>
+        <p style="color:var(--text-muted);font-size:12px;margin-top:8px;text-align:center">
+          Pick order will be randomized on start
+        </p>
+      </div>
+    </div>
+  </div>
+
+  <!-- Active Draft Room -->
+  <div id="draft-room" style="display:none">
+
+    <!-- Status Bar -->
+    <div id="status-bar">
+      <div id="current-turn-info"></div>
+      <div id="timer-display" class="timer" style="display:none"></div>
+      <div id="pick-action">
+        <div id="commissioner-draft-controls" style="display:none">
+          <button class="btn btn-sm btn-danger" id="end-draft-btn">End Draft</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Main 3-column layout -->
+    <div class="draft-layout">
+
+      <!-- LEFT: Player Pool -->
+      <aside class="player-pool">
+        <div class="panel-header">
+          <h3>Available Players</h3>
+          <span class="count-badge" id="available-count">0</span>
+        </div>
+        <div class="search-row">
+          <input type="text" id="player-search" placeholder="Search…">
+          <select id="pos-filter"><option value="">All</option></select>
+        </div>
+        <div id="player-list"></div>
+      </aside>
+
+      <!-- CENTER: Draft Board -->
+      <main class="draft-board-container">
+        <div class="board-header">
+          <h3 id="board-title">Draft Board</h3>
+          <button class="btn btn-sm" id="toggle-view-btn">List View</button>
+        </div>
+        <div id="draft-board"></div>
+      </main>
+
+      <!-- RIGHT: My Team + All Teams -->
+      <aside class="my-team-panel">
+        <div id="my-team-section">
+          <h3>My Team: <span id="my-team-name">—</span></h3>
+          <div id="my-budget" style="display:none">
+            <div class="budget-display">
+              <span>Remaining Budget</span>
+              <span class="budget-amount" id="my-budget-amount">$0</span>
+            </div>
+          </div>
+          <div id="my-picks"></div>
+        </div>
+        <div class="all-teams-summary">
+          <h3>All Teams</h3>
+          <div id="all-teams-list"></div>
+        </div>
+      </aside>
+    </div>
+
+    <!-- Auction Panel (shown only for auction format with active nomination) -->
+    <div id="auction-panel" style="display:none">
+      <div>
+        <h3>Current Nomination</h3>
+        <div id="nominated-player-card" class="nominated-player-card"></div>
+      </div>
+      <div>
+        <h3>Current Bids</h3>
+        <div id="bids-list"></div>
+        <div class="bid-input-row" id="bid-input-row" style="display:none">
+          <input type="number" id="bid-amount" placeholder="$" min="1">
+          <button class="btn btn-primary" id="place-bid-btn">Bid</button>
+        </div>
+      </div>
+      <div class="auction-actions">
+        <div id="nominate-hint" style="display:none">
+          <p style="color:var(--text-muted);font-size:12px">Click a player to nominate</p>
+        </div>
+        <div id="commissioner-auction-btns" style="display:none">
+          <button class="btn btn-sm btn-success" id="close-auction-btn">Close Bidding</button>
+          <button class="btn btn-sm" id="skip-nomination-btn">Skip Player</button>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- Completed State -->
+  <div id="draft-completed" style="display:none">
+    <div class="completed-content">
+      <h2>🎉 Draft Complete!</h2>
+      <div class="rosters-grid" id="final-rosters"></div>
+    </div>
+  </div>
+
+  <!-- Confirm Pick Modal -->
+  <div class="modal-overlay" id="pick-modal" style="display:none">
+    <div class="modal">
+      <h3>Confirm Pick</h3>
+      <p id="pick-modal-text"></p>
+      <div class="modal-actions">
+        <button class="btn" id="pick-cancel-btn">Cancel</button>
+        <button class="btn btn-primary" id="pick-confirm-btn">Draft Player</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="toast-container"></div>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script src="/js/draft.js" type="module"></script>
+</body>
+</html>

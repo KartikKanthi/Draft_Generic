@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Fantasy Draft</title>
+  <link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+  <div class="home-container">
+    <h1 class="app-title">🏆 Fantasy Draft</h1>
+
+    <div class="tab-nav">
+      <button class="tab-btn active" data-tab="create">Create Draft</button>
+      <button class="tab-btn" data-tab="join">Join Draft</button>
+    </div>
+
+    <!-- Create -->
+    <div class="tab-panel active" id="tab-create">
+      <form id="create-form">
+        <div class="form-group">
+          <label>Draft Name</label>
+          <input type="text" name="name" placeholder="World Cup 2026 Fantasy Draft" required>
+        </div>
+
+        <div class="form-row">
+          <div class="form-group">
+            <label>Draft Format</label>
+            <select name="format" id="format-select">
+              <option value="snake">Snake Draft</option>
+              <option value="linear">Linear Draft</option>
+              <option value="auction">Auction Draft</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label>Draft Mode</label>
+            <select name="mode" id="mode-select">
+              <option value="live">Live (real-time)</option>
+              <option value="async">Async (pick anytime)</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="form-row">
+          <div class="form-group">
+            <label>Number of Teams <small style="color:var(--text-muted)">(2–32)</small></label>
+            <input type="number" name="num_teams" min="2" max="32" value="10" required>
+          </div>
+          <div class="form-group" id="timer-group">
+            <label id="timer-label">Pick Timer (seconds, 0 = no limit)</label>
+            <input type="number" name="pick_timer" min="0" max="3600" value="90">
+          </div>
+        </div>
+
+        <div class="form-group" id="budget-group" style="display:none">
+          <label>Auction Budget per Team ($)</label>
+          <input type="number" name="auction_budget" min="1" value="200">
+        </div>
+
+        <div class="form-group">
+          <label>Player Pool CSV <small style="color:var(--text-muted)">(optional — can upload later)</small></label>
+          <div class="file-drop" id="csv-drop">
+            <input type="file" name="players_csv" accept=".csv" id="csv-input">
+            <p>Drop CSV here or <span>click to browse</span></p>
+            <small>Required column: <strong>Name</strong> — optional: Position, Team</small>
+            <p class="file-name" id="file-name-display"></p>
+          </div>
+        </div>
+
+        <button type="submit" class="btn btn-primary btn-full" style="margin-top:8px">Create Draft</button>
+      </form>
+    </div>
+
+    <!-- Join -->
+    <div class="tab-panel" id="tab-join">
+      <form id="join-form">
+        <div class="form-group">
+          <label>Draft ID</label>
+          <input type="text" name="draft_id" placeholder="Paste draft ID here" required>
+        </div>
+        <div class="form-group">
+          <label>Your Team Name</label>
+          <input type="text" name="team_name" placeholder="My Awesome Team" required>
+        </div>
+        <button type="submit" class="btn btn-primary btn-full">Join Draft</button>
+      </form>
+    </div>
+  </div>
+
+  <div id="toast-container"></div>
+  <script src="/js/home.js" type="module"></script>
+</body>
+</html>

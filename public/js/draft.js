@@ -1,0 +1,665 @@
+// ── State ─────────────────────────────────────────────────────────────────────
+const params = new URLSearchParams(location.search);
+const DRAFT_ID = params.get('id');
+if (!DRAFT_ID) { location.href = '/'; }
+
+const COMMISSIONER_TOKEN = localStorage.getItem(`commissioner_${DRAFT_ID}`);
+const MY_TEAM_ID = localStorage.getItem(`team_${DRAFT_ID}_id`);
+const MY_TEAM_TOKEN = localStorage.getItem(`team_${DRAFT_ID}_token`);
+
+let state = null;
+let isCommissioner = !!COMMISSIONER_TOKEN;
+let boardView = 'grid'; // 'grid' | 'list'
+let pendingPickId = null;
+let clientTimerInterval = null;
+let clientTimerEnd = null;
+
+// ── Socket ────────────────────────────────────────────────────────────────────
+const socket = io();
+
+socket.on('connect', () => {
+  socket.emit('join-draft', {
+    draftId: DRAFT_ID,
+    commissionerToken: COMMISSIONER_TOKEN || undefined,
+    teamToken: MY_TEAM_TOKEN || undefined
+  });
+});
+
+socket.on('init', ({ state: s, isCommissioner: ic, teamId }) => {
+  isCommissioner = ic;
+  state = s;
+  render();
+});
+
+socket.on('draft-state', (s) => {
+  state = s;
+  render();
+});
+
+socket.on('draft-started', () => {
+  toast('Draft has started!', 'success');
+});
+
+socket.on('pick-made', ({ player, team, isAutoPick }) => {
+  const suffix = isAutoPick ? ' (auto-pick)' : '';
+  toast(`${team.name} drafted ${player.name}${suffix}`, 'info');
+});
+
+socket.on('timer-tick', ({ remaining }) => {
+  clientTimerEnd = Date.now() + remaining;
+  renderTimer(remaining);
+});
+
+socket.on('bid-placed', ({ teamName, amount }) => {
+  toast(`${teamName} bid $${amount}`, 'info');
+  if (state) renderAuctionBids();
+});
+
+socket.on('auction-closed', ({ player, team, amount }) => {
+  toast(`${team.name} won ${player.name} for $${amount}`, 'success');
+});
+
+socket.on('error', ({ message }) => {
+  toast(message, 'error');
+});
+
+// ── Render ────────────────────────────────────────────────────────────────────
+function render() {
+  if (!state) return;
+
+  // Header
+  document.getElementById('draft-name').textContent = state.name;
+  setFormatBadge();
+  setModeBadge();
+  setStatusBadge();
+  updatePickCounter();
+
+  if (state.status === 'waiting') {
+    show('waiting-room');
+    hide('draft-room');
+    hide('draft-completed');
+    renderWaiting();
+  } else if (state.status === 'completed') {
+    hide('waiting-room');
+    hide('draft-room');
+    show('draft-completed');
+    renderCompleted();
+  } else {
+    hide('waiting-room');
+    show('draft-room');
+    hide('draft-completed');
+    renderActive();
+  }
+}
+
+function renderWaiting() {
+  document.getElementById('draft-id-code').textContent = DRAFT_ID;
+  document.getElementById('teams-count').textContent = state.teams.length;
+  document.getElementById('teams-needed').textContent = state.num_teams;
+
+  const grid = document.getElementById('teams-waiting-grid');
+  grid.innerHTML = state.teams.map(t => `
+    <div class="team-waiting-card ${t.id === MY_TEAM_ID ? 'me' : ''}">
+      ${t.id === MY_TEAM_ID ? '★ ' : ''}${escHtml(t.name)}
+    </div>
+  `).join('') + Array.from({ length: Math.max(0, state.num_teams - state.teams.length) }, (_, i) =>
+    `<div class="team-waiting-card" style="opacity:0.3">Empty slot</div>`
+  ).join('');
+
+  const commDiv = document.getElementById('commissioner-waiting');
+  if (isCommissioner) {
+    commDiv.style.display = 'block';
+    const playerCount = state.players.length;
+    document.getElementById('player-count-badge').textContent =
+      playerCount ? `✓ ${playerCount} players loaded` : '';
+  } else {
+    commDiv.style.display = 'none';
+  }
+}
+
+function renderActive() {
+  const teams = state.teams;
+  const numTeams = teams.length;
+  const format = state.format;
+
+  // Current on-clock team (for non-auction)
+  let onClockTeam = null;
+  if (format !== 'auction') {
+    const idx = getTeamIndex(state.current_pick, numTeams, format);
+    onClockTeam = teams[idx];
+  }
+
+  // Status bar
+  renderStatusBar(onClockTeam);
+
+  // Player pool
+  renderPlayerPool(onClockTeam);
+
+  // Draft board
+  if (format === 'auction') {
+    renderAuctionBoard();
+  } else {
+    renderDraftBoard(onClockTeam);
+  }
+
+  // My team
+  renderMyTeam();
+
+  // All teams
+  renderAllTeams(onClockTeam);
+
+  // Auction panel
+  if (format === 'auction') {
+    renderAuctionPanel();
+  } else {
+    hide('auction-panel');
+  }
+
+  // Commissioner controls
+  const commDraftControls = document.getElementById('commissioner-draft-controls');
+  commDraftControls.style.display = isCommissioner ? 'block' : 'none';
+}
+
+function renderStatusBar(onClockTeam) {
+  const info = document.getElementById('current-turn-info');
+  const timerEl = document.getElementById('timer-display');
+
+  if (state.format === 'auction') {
+    if (state.current_nomination) {
+      const nominatedPlayer = state.players.find(p => p.id === state.current_nomination);
+      info.innerHTML = `<span class="other-turn">Auction: <strong>${escHtml(nominatedPlayer?.name || '?')}</strong></span>`;
+    } else if (isCommissioner) {
+      info.innerHTML = `<span class="my-turn">Select a player to nominate →</span>`;
+    } else {
+      info.innerHTML = `<span class="other-turn">Waiting for commissioner to nominate…</span>`;
+    }
+    timerEl.style.display = 'none';
+  } else if (onClockTeam) {
+    const isMyTurn = onClockTeam.id === MY_TEAM_ID;
+    const round = Math.floor(state.current_pick / state.teams.length) + 1;
+    const pickInRound = (state.teams.length > 0)
+      ? (state.current_pick % state.teams.length) + 1
+      : 1;
+    if (isMyTurn) {
+      info.innerHTML = `<span class="my-turn">🟢 Your turn to pick! — Round ${round}, Pick ${pickInRound}</span>`;
+    } else {
+      info.innerHTML = `<span class="other-turn">Round ${round}, Pick ${pickInRound} — <strong>${escHtml(onClockTeam.name)}</strong>'s turn</span>`;
+    }
+
+    if (state.mode === 'live' && state.pick_timer > 0) {
+      timerEl.style.display = 'block';
+    } else {
+      timerEl.style.display = 'none';
+    }
+  }
+}
+
+function renderTimer(remaining) {
+  const el = document.getElementById('timer-display');
+  if (!el || el.style.display === 'none') return;
+  const secs = Math.ceil(remaining / 1000);
+  const mins = Math.floor(secs / 60);
+  const s = secs % 60;
+  el.textContent = mins > 0 ? `${mins}:${String(s).padStart(2, '0')}` : `${secs}`;
+  el.className = 'timer ' + (secs <= 10 ? 'urgent' : secs <= 30 ? 'warning' : 'ok');
+}
+
+function renderPlayerPool(onClockTeam) {
+  const available = state.players.filter(p => !p.drafted_by);
+  document.getElementById('available-count').textContent = available.length;
+
+  const search = document.getElementById('player-search').value.toLowerCase();
+  const posFilter = document.getElementById('pos-filter').value;
+
+  // Update position filter options
+  const positions = [...new Set(state.players.map(p => p.position).filter(Boolean))].sort();
+  const posSelect = document.getElementById('pos-filter');
+  const currentPos = posSelect.value;
+  posSelect.innerHTML = '<option value="">All</option>' +
+    positions.map(p => `<option value="${p}" ${p === currentPos ? 'selected' : ''}>${p}</option>`).join('');
+
+  const filtered = available.filter(p => {
+    if (search && !p.name.toLowerCase().includes(search) &&
+        !(p.position || '').toLowerCase().includes(search) &&
+        !(p.team_affiliation || '').toLowerCase().includes(search)) return false;
+    if (posFilter && p.position !== posFilter) return false;
+    return true;
+  });
+
+  const isMyTurn = onClockTeam?.id === MY_TEAM_ID;
+  const isNominateMode = state.format === 'auction' && isCommissioner && !state.current_nomination;
+
+  const list = document.getElementById('player-list');
+  list.innerHTML = filtered.map(p => {
+    let cls = 'player-item';
+    if (state.format !== 'auction' && isMyTurn) cls += ' my-turn-active';
+    else if (state.format !== 'auction' && !isMyTurn) cls += ' disabled';
+    if (isNominateMode) cls += ' nominate-mode';
+
+    const extras = Object.entries(p.metadata || {}).map(([k, v]) => `${k}: ${v}`).join(' · ');
+
+    return `<div class="${cls}" data-id="${p.id}" title="${escHtml(extras)}">
+      <span class="pos-badge">${escHtml(p.position || '—')}</span>
+      <div class="player-info">
+        <div class="player-name">${escHtml(p.name)}</div>
+        ${p.team_affiliation ? `<div class="player-team">${escHtml(p.team_affiliation)}</div>` : ''}
+      </div>
+    </div>`;
+  }).join('') || `<div style="padding:20px;text-align:center;color:var(--text-muted)">No players found</div>`;
+
+  // Click handlers
+  list.querySelectorAll('.player-item:not(.disabled)').forEach(el => {
+    el.addEventListener('click', () => {
+      const playerId = el.dataset.id;
+      if (isNominateMode) {
+        socket.emit('nominate-player', { commissionerToken: COMMISSIONER_TOKEN, playerId });
+      } else if (isMyTurn && state.format !== 'auction') {
+        showPickModal(playerId);
+      }
+    });
+  });
+}
+
+function renderDraftBoard(onClockTeam) {
+  const teams = state.teams;
+  const players = state.players;
+  const numTeams = teams.length;
+  if (numTeams === 0) return;
+
+  const picks = players.filter(p => p.drafted_by !== null && p.drafted_by !== undefined);
+  const maxRound = picks.length > 0
+    ? Math.floor(Math.max(...picks.map(p => p.pick_number)) / numTeams) + 1
+    : 1;
+  const totalRounds = Math.max(maxRound, Math.ceil(players.length / numTeams));
+
+  if (boardView === 'list') {
+    renderBoardList(picks, teams);
+    return;
+  }
+
+  // Grid view
+  const board = document.getElementById('draft-board');
+  const cols = numTeams + 1; // +1 for round label
+
+  // Build pick lookup: pick_number -> player
+  const pickMap = {};
+  for (const p of picks) pickMap[p.pick_number] = p;
+
+  // Team name row
+  let html = `<div class="board-grid" style="grid-template-columns: 32px repeat(${numTeams}, minmax(90px, 1fr))">`;
+
+  // Header row
+  html += `<div class="round-label"></div>`;
+  for (const team of teams) {
+    const isMe = team.id === MY_TEAM_ID;
+    const isClock = team.id === onClockTeam?.id;
+    let cls = 'board-col-header';
+    if (isMe) cls += ' me';
+    if (isClock) cls += ' on-clock';
+    html += `<div class="${cls}" title="${escHtml(team.name)}">${escHtml(team.name)}</div>`;
+  }
+
+  // Round rows
+  for (let round = 0; round < totalRounds; round++) {
+    html += `<div class="round-label">${round + 1}</div>`;
+    for (let col = 0; col < numTeams; col++) {
+      const pickNum = round * numTeams + col;
+      const teamIdx = getTeamIndex(pickNum, numTeams, state.format);
+      const team = teams[teamIdx];
+      const isMe = team?.id === MY_TEAM_ID;
+      const isClock = team?.id === onClockTeam?.id && pickNum === state.current_pick;
+      const pick = pickMap[pickNum];
+
+      let cls = 'board-cell';
+      if (!pick) cls += ' empty';
+      if (isMe) cls += ' me';
+      if (isClock && !pick) cls += ' on-clock';
+
+      html += `<div class="${cls}">`;
+      if (pick) {
+        html += `<div class="cell-player">${escHtml(pick.name)}</div>`;
+        if (pick.position) html += `<div class="cell-pos">${escHtml(pick.position)}</div>`;
+        if (pick.bid_amount) html += `<div class="cell-pos">$${pick.bid_amount}</div>`;
+      } else if (isClock) {
+        html += `<div class="cell-pos" style="color:var(--primary)">On the clock…</div>`;
+      }
+      html += `</div>`;
+    }
+  }
+
+  html += '</div>';
+  board.innerHTML = html;
+}
+
+function renderBoardList(picks, teams) {
+  const teamMap = Object.fromEntries(teams.map(t => [t.id, t]));
+  const sorted = [...picks].sort((a, b) => a.pick_number - b.pick_number);
+  const numTeams = teams.length;
+  document.getElementById('draft-board').innerHTML = sorted.map(p => {
+    const team = teamMap[p.drafted_by];
+    const round = Math.floor(p.pick_number / numTeams) + 1;
+    const pickInRound = (p.pick_number % numTeams) + 1;
+    return `<div class="pick-list-item">
+      <span class="pick-num">${p.pick_number + 1}</span>
+      <span>${escHtml(p.name)}${p.position ? ` <span style="color:var(--text-muted)">(${escHtml(p.position)})</span>` : ''}</span>
+      <span class="pick-team">${escHtml(team?.name || '?')}</span>
+    </div>`;
+  }).join('') || `<div style="padding:20px;text-align:center;color:var(--text-muted)">No picks yet</div>`;
+}
+
+function renderAuctionBoard() {
+  const picks = state.players.filter(p => p.drafted_by);
+  const teamMap = Object.fromEntries(state.teams.map(t => [t.id, t]));
+  const sorted = [...picks].sort((a, b) => a.pick_number - b.pick_number);
+  document.getElementById('draft-board').innerHTML = sorted.map(p => {
+    const team = teamMap[p.drafted_by];
+    return `<div class="auction-result">
+      <span>${escHtml(p.name)}${p.position ? ` <span style="color:var(--text-muted)">(${escHtml(p.position)})</span>` : ''}</span>
+      <span class="bid-amount">$${p.bid_amount || 1}</span>
+      <span style="color:var(--text-muted);font-size:12px">${escHtml(team?.name || '?')}</span>
+    </div>`;
+  }).join('') || `<div style="padding:20px;text-align:center;color:var(--text-muted)">No picks yet</div>`;
+}
+
+function renderAuctionPanel() {
+  const panel = document.getElementById('auction-panel');
+  const nominatedCard = document.getElementById('nominated-player-card');
+  const bidInputRow = document.getElementById('bid-input-row');
+  const nominateHint = document.getElementById('nominate-hint');
+  const commAuctionBtns = document.getElementById('commissioner-auction-btns');
+
+  if (!state.current_nomination) {
+    // No active nomination
+    nominatedCard.innerHTML = `<div style="color:var(--text-muted);font-size:13px">No active nomination</div>`;
+    document.getElementById('bids-list').innerHTML = '';
+    bidInputRow.style.display = 'none';
+    nominateHint.style.display = isCommissioner ? 'block' : 'none';
+    commAuctionBtns.style.display = 'none';
+    panel.style.display = state.status === 'active' ? 'grid' : 'none';
+    return;
+  }
+
+  panel.style.display = 'grid';
+  nominateHint.style.display = 'none';
+  commAuctionBtns.style.display = isCommissioner ? 'flex' : 'none';
+
+  const player = state.players.find(p => p.id === state.current_nomination);
+  if (player) {
+    nominatedCard.innerHTML = `
+      <div class="player-name-big">${escHtml(player.name)}</div>
+      <div class="player-details">
+        ${player.position ? `Position: ${escHtml(player.position)}` : ''}
+        ${player.team_affiliation ? ` · ${escHtml(player.team_affiliation)}` : ''}
+      </div>`;
+  }
+
+  renderAuctionBids();
+
+  // Show bid input if team member and has budget
+  if (MY_TEAM_TOKEN) {
+    const myTeam = state.teams.find(t => t.id === MY_TEAM_ID);
+    bidInputRow.style.display = myTeam && myTeam.budget > 0 ? 'flex' : 'none';
+    const bidInput = document.getElementById('bid-amount');
+    bidInput.max = myTeam?.budget || 1;
+    bidInput.placeholder = `$1 – $${myTeam?.budget || '?'}`;
+  } else {
+    bidInputRow.style.display = 'none';
+  }
+}
+
+function renderAuctionBids() {
+  // We track bids via bid-placed events; show what we know from state
+  // Since bids aren't in the state object, just show a placeholder message
+  const list = document.getElementById('bids-list');
+  if (!list) return;
+  // Bids are broadcast per event; we maintain a local map
+  list.innerHTML = `<div style="color:var(--text-muted);font-size:12px">Bids are hidden until auction closes</div>`;
+}
+
+function renderMyTeam() {
+  const myTeamNameEl = document.getElementById('my-team-name');
+  const myPicksEl = document.getElementById('my-picks');
+  const myBudgetEl = document.getElementById('my-budget');
+  const myBudgetAmount = document.getElementById('my-budget-amount');
+
+  if (!MY_TEAM_ID) {
+    myTeamNameEl.textContent = isCommissioner ? '(Commissioner)' : '(Spectator)';
+    myPicksEl.innerHTML = '';
+    return;
+  }
+
+  const myTeam = state.teams.find(t => t.id === MY_TEAM_ID);
+  if (!myTeam) return;
+
+  myTeamNameEl.textContent = myTeam.name;
+
+  if (state.format === 'auction') {
+    myBudgetEl.style.display = 'block';
+    myBudgetAmount.textContent = `$${myTeam.budget}`;
+  } else {
+    myBudgetEl.style.display = 'none';
+  }
+
+  const myPicks = state.players
+    .filter(p => p.drafted_by === MY_TEAM_ID)
+    .sort((a, b) => a.pick_number - b.pick_number);
+
+  const numTeams = state.teams.length;
+  myPicksEl.innerHTML = myPicks.map(p => {
+    const round = Math.floor(p.pick_number / numTeams) + 1;
+    return `<div class="my-pick-item">
+      <span class="pick-round">R${round}</span>
+      <span class="pos-badge">${escHtml(p.position || '—')}</span>
+      <span class="player-name" style="flex:1">${escHtml(p.name)}</span>
+      ${p.bid_amount ? `<span style="color:var(--warning);font-size:11px">$${p.bid_amount}</span>` : ''}
+    </div>`;
+  }).join('') || `<div style="color:var(--text-muted);font-size:12px;padding:8px 0">No picks yet</div>`;
+}
+
+function renderAllTeams(onClockTeam) {
+  const numTeams = state.teams.length;
+  const list = document.getElementById('all-teams-list');
+  list.innerHTML = state.teams.map(team => {
+    const picks = state.players.filter(p => p.drafted_by === team.id).length;
+    const isClock = team.id === onClockTeam?.id;
+    const isMe = team.id === MY_TEAM_ID;
+    let cls = 'team-summary-item';
+    if (isClock) cls += ' on-clock';
+    if (isMe) cls += ' me';
+
+    return `<div class="${cls}">
+      <div>
+        <div style="font-weight:${isMe ? '700' : '400'}">${escHtml(team.name)}</div>
+        ${isClock ? `<div class="on-clock-label">ON THE CLOCK</div>` : ''}
+      </div>
+      <div style="text-align:right">
+        <div class="team-picks-count">${picks} pick${picks !== 1 ? 's' : ''}</div>
+        ${state.format === 'auction' ? `<div class="team-budget">$${team.budget}</div>` : ''}
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function renderCompleted() {
+  const teamMap = Object.fromEntries(state.teams.map(t => [t.id, t]));
+  const sortedTeams = [...state.teams].sort((a, b) => a.pick_order - b.pick_order);
+  const numTeams = state.teams.length;
+
+  document.getElementById('final-rosters').innerHTML = sortedTeams.map(team => {
+    const picks = state.players
+      .filter(p => p.drafted_by === team.id)
+      .sort((a, b) => a.pick_number - b.pick_number);
+    const isMe = team.id === MY_TEAM_ID;
+    const round = (n) => Math.floor(n / numTeams) + 1;
+
+    return `<div class="roster-card ${isMe ? 'me' : ''}">
+      <h3>${isMe ? '★ ' : ''}${escHtml(team.name)}</h3>
+      ${picks.map(p => `<div class="roster-pick">
+        <span>R${round(p.pick_number)} · ${escHtml(p.name)}</span>
+        <div style="display:flex;gap:8px;align-items:center">
+          <span class="r-pos">${escHtml(p.position || '')}</span>
+          ${p.bid_amount ? `<span class="r-bid">$${p.bid_amount}</span>` : ''}
+        </div>
+      </div>`).join('')}
+      ${picks.length === 0 ? '<div style="color:var(--text-muted);font-size:12px">No picks</div>' : ''}
+      ${state.format === 'auction' ? `<div style="margin-top:8px;font-size:12px;color:var(--warning)">Budget remaining: $${team.budget}</div>` : ''}
+    </div>`;
+  }).join('');
+}
+
+// ── Pick Modal ────────────────────────────────────────────────────────────────
+function showPickModal(playerId) {
+  const player = state.players.find(p => p.id === playerId);
+  if (!player) return;
+  pendingPickId = playerId;
+  document.getElementById('pick-modal-text').textContent =
+    `Draft ${player.name}${player.position ? ` (${player.position})` : ''}?`;
+  document.getElementById('pick-modal').style.display = 'flex';
+}
+
+document.getElementById('pick-confirm-btn').addEventListener('click', () => {
+  if (!pendingPickId) return;
+  socket.emit('make-pick', { teamToken: MY_TEAM_TOKEN, playerId: pendingPickId });
+  pendingPickId = null;
+  document.getElementById('pick-modal').style.display = 'none';
+});
+
+document.getElementById('pick-cancel-btn').addEventListener('click', () => {
+  pendingPickId = null;
+  document.getElementById('pick-modal').style.display = 'none';
+});
+
+document.getElementById('pick-modal').addEventListener('click', (e) => {
+  if (e.target === e.currentTarget) {
+    pendingPickId = null;
+    e.currentTarget.style.display = 'none';
+  }
+});
+
+// ── Auction Buttons ───────────────────────────────────────────────────────────
+document.getElementById('place-bid-btn')?.addEventListener('click', () => {
+  const amount = parseInt(document.getElementById('bid-amount').value);
+  if (!amount || amount < 1) { toast('Enter a valid bid amount', 'error'); return; }
+  socket.emit('place-bid', { teamToken: MY_TEAM_TOKEN, amount });
+  document.getElementById('bid-amount').value = '';
+  toast(`Bid $${amount} placed`, 'success');
+});
+
+document.getElementById('close-auction-btn')?.addEventListener('click', () => {
+  socket.emit('close-auction', { commissionerToken: COMMISSIONER_TOKEN });
+});
+
+document.getElementById('skip-nomination-btn')?.addEventListener('click', () => {
+  socket.emit('skip-nomination', { commissionerToken: COMMISSIONER_TOKEN });
+});
+
+// ── Commissioner Controls ─────────────────────────────────────────────────────
+document.getElementById('start-draft-btn')?.addEventListener('click', () => {
+  socket.emit('start-draft', { commissionerToken: COMMISSIONER_TOKEN });
+});
+
+document.getElementById('end-draft-btn')?.addEventListener('click', () => {
+  if (!confirm('End the draft early? This will mark it as completed.')) return;
+  socket.emit('complete-draft', { commissionerToken: COMMISSIONER_TOKEN });
+});
+
+document.getElementById('upload-csv-btn')?.addEventListener('click', async () => {
+  const file = document.getElementById('upload-csv').files[0];
+  if (!file) { toast('Select a CSV file first', 'error'); return; }
+  const fd = new FormData();
+  fd.append('players_csv', file);
+  try {
+    const res = await fetch(`/api/drafts/${DRAFT_ID}/players`, {
+      method: 'POST',
+      headers: { 'x-commissioner-token': COMMISSIONER_TOKEN },
+      body: fd
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error);
+    toast(`${data.player_count} players loaded`, 'success');
+    document.getElementById('player-count-badge').textContent = `✓ ${data.player_count} players`;
+  } catch (err) {
+    toast(err.message, 'error');
+  }
+});
+
+// ── Board view toggle ─────────────────────────────────────────────────────────
+document.getElementById('toggle-view-btn')?.addEventListener('click', () => {
+  boardView = boardView === 'grid' ? 'list' : 'grid';
+  document.getElementById('toggle-view-btn').textContent = boardView === 'grid' ? 'List View' : 'Grid View';
+  if (state) render();
+});
+
+// ── Copy Draft ID ─────────────────────────────────────────────────────────────
+function copyDraftId() {
+  navigator.clipboard.writeText(DRAFT_ID).then(() => toast('Draft ID copied!', 'success'));
+}
+document.getElementById('copy-id-btn')?.addEventListener('click', copyDraftId);
+document.getElementById('copy-id-btn-waiting')?.addEventListener('click', copyDraftId);
+
+// ── Search & filter ───────────────────────────────────────────────────────────
+document.getElementById('player-search')?.addEventListener('input', () => { if (state) render(); });
+document.getElementById('pos-filter')?.addEventListener('change', () => { if (state) render(); });
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+function getTeamIndex(pickNumber, numTeams, format) {
+  const round = Math.floor(pickNumber / numTeams);
+  const pickInRound = pickNumber % numTeams;
+  if (format === 'snake') return round % 2 === 0 ? pickInRound : numTeams - 1 - pickInRound;
+  return pickInRound;
+}
+
+function escHtml(str) {
+  return String(str ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+function show(id) { document.getElementById(id).style.display = ''; }
+function hide(id) { document.getElementById(id).style.display = 'none'; }
+
+function toast(msg, type = 'info') {
+  const el = document.createElement('div');
+  el.className = `toast ${type}`;
+  el.textContent = msg;
+  document.getElementById('toast-container').appendChild(el);
+  setTimeout(() => el.remove(), 4000);
+}
+
+// ── Badge helpers ─────────────────────────────────────────────────────────────
+function setFormatBadge() {
+  const el = document.getElementById('format-badge');
+  const labels = { snake: 'Snake', linear: 'Linear', auction: 'Auction' };
+  el.textContent = labels[state.format] || state.format;
+  el.className = `badge badge-${state.format}`;
+}
+
+function setModeBadge() {
+  const el = document.getElementById('mode-badge');
+  el.textContent = state.mode === 'live' ? 'Live' : 'Async';
+  el.className = `badge badge-${state.mode}`;
+}
+
+function setStatusBadge() {
+  const el = document.getElementById('status-badge');
+  el.textContent = state.status;
+  el.className = `badge badge-${state.status}`;
+}
+
+function updatePickCounter() {
+  const el = document.getElementById('pick-counter');
+  if (state.status === 'active' && state.format !== 'auction') {
+    const total = state.players.length;
+    el.textContent = `Pick ${state.current_pick + 1} of ${total}`;
+  } else if (state.status === 'active' && state.format === 'auction') {
+    const drafted = state.players.filter(p => p.drafted_by).length;
+    el.textContent = `${drafted} / ${state.players.length} players auctioned`;
+  } else {
+    el.textContent = '';
+  }
+}
+
+// ── Initial load ──────────────────────────────────────────────────────────────
+// If not connected via socket yet, fetch state directly for fast initial render
+fetch(`/api/drafts/${DRAFT_ID}`)
+  .then(r => r.ok ? r.json() : null)
+  .then(s => { if (s && !state) { state = s; render(); } })
+  .catch(() => {});
