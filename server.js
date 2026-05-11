@@ -278,6 +278,24 @@ app.get('/api/drafts/:id', (req, res) => {
   res.json(state);
 });
 
+app.delete('/api/drafts/:id', (req, res) => {
+  const draft = db.prepare('SELECT * FROM drafts WHERE id = ?').get(req.params.id);
+  if (!draft) return res.status(404).json({ error: 'Draft not found' });
+  if (draft.commissioner_token !== req.headers['x-commissioner-token'])
+    return res.status(403).json({ error: 'Unauthorized' });
+
+  db.transaction(() => {
+    db.prepare('DELETE FROM bids WHERE draft_id = ?').run(req.params.id);
+    db.prepare('DELETE FROM players WHERE draft_id = ?').run(req.params.id);
+    db.prepare('DELETE FROM teams WHERE draft_id = ?').run(req.params.id);
+    db.prepare('DELETE FROM drafts WHERE id = ?').run(req.params.id);
+  })();
+
+  clearPickTimer(req.params.id);
+  io.to(`draft:${req.params.id}`).emit('draft-deleted', {});
+  res.json({ success: true });
+});
+
 app.post('/api/drafts/:id/join', (req, res) => {
   const { team_name } = req.body;
   if (!team_name?.trim()) return res.status(400).json({ error: 'team_name required' });

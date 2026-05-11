@@ -63,6 +63,11 @@ socket.on('error', ({ message }) => {
   toast(message, 'error');
 });
 
+socket.on('draft-deleted', () => {
+  alert('This draft has been deleted by the commissioner.');
+  location.href = '/';
+});
+
 // ── Render ────────────────────────────────────────────────────────────────────
 function render() {
   if (!state) return;
@@ -157,7 +162,7 @@ function renderActive() {
 
   // Commissioner controls
   const commDraftControls = document.getElementById('commissioner-draft-controls');
-  commDraftControls.style.display = isCommissioner ? 'block' : 'none';
+  commDraftControls.style.display = isCommissioner ? 'flex' : 'none';
 }
 
 function renderStatusBar(onClockTeam) {
@@ -562,6 +567,24 @@ document.getElementById('end-draft-btn')?.addEventListener('click', () => {
   if (!confirm('End the draft early? This will mark it as completed.')) return;
   socket.emit('complete-draft', { commissionerToken: COMMISSIONER_TOKEN });
 });
+
+async function deleteDraft() {
+  if (!confirm('Permanently delete this draft? This cannot be undone.')) return;
+  try {
+    const res = await fetch(`/api/drafts/${DRAFT_ID}`, {
+      method: 'DELETE',
+      headers: { 'x-commissioner-token': COMMISSIONER_TOKEN }
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error);
+    location.href = '/';
+  } catch (err) {
+    toast(err.message, 'error');
+  }
+}
+
+document.getElementById('delete-draft-btn')?.addEventListener('click', deleteDraft);
+document.getElementById('delete-draft-btn-waiting')?.addEventListener('click', deleteDraft);
 
 document.getElementById('upload-csv-btn')?.addEventListener('click', async () => {
   const file = document.getElementById('upload-csv').files[0];
