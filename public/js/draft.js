@@ -252,13 +252,28 @@ function renderStatusBar(onClockTeam) {
 }
 
 function renderTimer(remaining) {
-  const el = document.getElementById('timer-display');
-  if (!el || el.style.display === 'none') return;
   const secs = Math.ceil(remaining / 1000);
   const mins = Math.floor(secs / 60);
   const s = secs % 60;
-  el.textContent = mins > 0 ? `${mins}:${String(s).padStart(2, '0')}` : `${secs}`;
-  el.className = 'timer ' + (secs <= 10 ? 'urgent' : secs <= 30 ? 'warning' : 'ok');
+  const text = mins > 0 ? `${mins}:${String(s).padStart(2, '0')}` : `${secs}`;
+  const cls = 'timer ' + (secs <= 10 ? 'urgent' : secs <= 20 ? 'warning' : 'ok');
+
+  // Status bar timer (snake/linear)
+  const statusTimer = document.getElementById('timer-display');
+  if (statusTimer && statusTimer.style.display !== 'none') {
+    statusTimer.textContent = text;
+    statusTimer.className = cls;
+  }
+
+  // Auction panel timer
+  const auctionTimer = document.getElementById('auction-timer');
+  if (auctionTimer && state?.format === 'auction' && state?.current_nomination) {
+    auctionTimer.style.display = 'block';
+    auctionTimer.textContent = text;
+    auctionTimer.className = cls;
+  } else if (auctionTimer) {
+    auctionTimer.style.display = 'none';
+  }
 }
 
 function renderPlayerPool(onClockTeam) {
@@ -441,6 +456,7 @@ function renderAuctionPanel() {
     // No active nomination
     nominatedCard.innerHTML = `<div style="color:var(--text-muted);font-size:13px">No active nomination</div>`;
     document.getElementById('bids-list').innerHTML = '';
+    document.getElementById('auction-timer').style.display = 'none';
     bidInputRow.style.display = 'none';
     nominateHint.style.display = isCommissioner ? 'block' : 'none';
     commAuctionBtns.style.display = 'none';

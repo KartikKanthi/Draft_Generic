@@ -86,12 +86,12 @@ function bulkInsertPlayers(draftId, records) {
 
 const activeTimers = new Map(); // draftId -> { interval, endsAt }
 
-function startPickTimer(draftId) {
+function startPickTimer(draftId, endsAtOverride = null) {
   clearPickTimer(draftId);
   const draft = db.prepare('SELECT * FROM drafts WHERE id = ?').get(draftId);
   if (!draft || draft.status !== 'active' || draft.pick_timer === 0) return;
 
-  const endsAt = Date.now() + draft.pick_timer * 1000;
+  const endsAt = endsAtOverride ?? Date.now() + draft.pick_timer * 1000;
 
   const interval = setInterval(() => {
     const remaining = Math.max(0, endsAt - Date.now());
@@ -455,6 +455,19 @@ io.on('connection', (socket) => {
       VALUES (?, ?, ?, ?, ?)
       ON CONFLICT(draft_id, player_id, team_id) DO UPDATE SET amount = excluded.amount, created_at = datetime('now')
     `).run(randomUUID(), draftId, draft.current_nomination, team.id, bid);
+
+    // Extend timer on bid: reset to max(20s, remaining)
+    const BID_EXTENSION_MS = 20 * 1000;
+    const currentTimer = activeTimers.get(draftId);
+    if (currentTimer && draft.mode === 'live') {
+      const remaining = currentTimer.endsAt - Date.now();
+      if (remaining < BID_EXTENSION_MS) {
+        const newEndsAt = Date.now() + BID_EXTENSION_MS;
+        db.prepare('UPDATE drafts SET nomination_ends_at = ? WHERE id = ?')
+          .run(new Date(newEndsAt).toISOString(), draftId);
+        startPickTimer(draftId, newEndsAt);
+      }
+    }
 
     io.to(`draft:${draftId}`).emit('bid-placed', {
       teamId: team.id, teamName: team.name, amount: bid
