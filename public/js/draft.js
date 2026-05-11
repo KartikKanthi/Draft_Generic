@@ -68,9 +68,19 @@ socket.on('timer-tick', ({ remaining }) => {
   renderTimer(remaining);
 });
 
-socket.on('bid-placed', ({ teamName, amount }) => {
+socket.on('bid-placed', ({ teamId, teamName, amount }) => {
   toast(`${teamName} bid $${amount}`, 'info');
-  if (state) renderAuctionBids();
+  // Update local bid state so the list refreshes immediately without waiting for next draft-state
+  if (state && state.current_nomination) {
+    const existing = state.current_bids.find(b => b.team_id === teamId);
+    if (existing) {
+      existing.amount = amount;
+    } else {
+      state.current_bids.push({ team_id: teamId, team_name: teamName, amount });
+    }
+    state.current_bids.sort((a, b) => b.amount - a.amount);
+    renderAuctionBids();
+  }
 });
 
 socket.on('auction-closed', ({ player, team, amount }) => {
@@ -459,12 +469,21 @@ function renderAuctionPanel() {
 }
 
 function renderAuctionBids() {
-  // We track bids via bid-placed events; show what we know from state
-  // Since bids aren't in the state object, just show a placeholder message
   const list = document.getElementById('bids-list');
   if (!list) return;
-  // Bids are broadcast per event; we maintain a local map
-  list.innerHTML = `<div style="color:var(--text-muted);font-size:12px">Bids are hidden until auction closes</div>`;
+  const bids = state.current_bids || [];
+  if (bids.length === 0) {
+    list.innerHTML = `<div style="color:var(--text-muted);font-size:12px">No bids yet</div>`;
+    return;
+  }
+  list.innerHTML = bids.map((b, i) => {
+    const isTop = i === 0;
+    const isMe = b.team_id === MY_TEAM_ID;
+    return `<div class="bid-item" style="${isTop ? 'border:1px solid var(--warning)' : ''}${isMe ? ';background:var(--primary-dim)' : ''}">
+      <span>${isTop ? '👑 ' : ''}${escHtml(b.team_name)}${isMe ? ' (you)' : ''}</span>
+      <span class="bid-val">$${b.amount}</span>
+    </div>`;
+  }).join('');
 }
 
 function renderMyTeam() {

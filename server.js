@@ -27,10 +27,24 @@ function getDraftState(draftId) {
     'SELECT * FROM players WHERE draft_id = ? ORDER BY name COLLATE NOCASE'
   ).all(draftId);
   const { commissioner_token, ...draftPublic } = draft;
+
+  // Include current bids for the active nomination
+  let currentBids = [];
+  if (draft.current_nomination) {
+    currentBids = db.prepare(`
+      SELECT b.team_id, b.amount, t.name as team_name
+      FROM bids b
+      JOIN teams t ON b.team_id = t.id
+      WHERE b.draft_id = ? AND b.player_id = ?
+      ORDER BY b.amount DESC, b.created_at ASC
+    `).all(draftId, draft.current_nomination);
+  }
+
   return {
     ...draftPublic,
     teams,
-    players: players.map(p => ({ ...p, metadata: p.metadata ? JSON.parse(p.metadata) : {} }))
+    players: players.map(p => ({ ...p, metadata: p.metadata ? JSON.parse(p.metadata) : {} })),
+    current_bids: currentBids
   };
 }
 
