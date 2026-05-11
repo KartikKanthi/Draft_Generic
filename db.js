@@ -3,7 +3,8 @@ import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const _db = new DatabaseSync(join(__dirname, 'draft.db'));
+const dbPath = process.env.DB_PATH || join(__dirname, 'draft.db');
+const _db = new DatabaseSync(dbPath);
 
 _db.exec('PRAGMA journal_mode = WAL');
 _db.exec('PRAGMA foreign_keys = ON');
