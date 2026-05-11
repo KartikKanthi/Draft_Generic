@@ -226,14 +226,24 @@ function renderPlayerPool(onClockTeam) {
   const positions = [...new Set(state.players.map(p => p.position).filter(Boolean))].sort();
   const posSelect = document.getElementById('pos-filter');
   const currentPos = posSelect.value;
-  posSelect.innerHTML = '<option value="">All</option>' +
+  posSelect.innerHTML = '<option value="">All Pos</option>' +
     positions.map(p => `<option value="${p}" ${p === currentPos ? 'selected' : ''}>${p}</option>`).join('');
+
+  // Update team filter options
+  const teamAffils = [...new Set(state.players.map(p => p.team_affiliation).filter(Boolean))].sort();
+  const teamSelect = document.getElementById('team-filter');
+  const currentTeam = teamSelect.value;
+  teamSelect.innerHTML = '<option value="">All Teams</option>' +
+    teamAffils.map(t => `<option value="${t}" ${t === currentTeam ? 'selected' : ''}>${t}</option>`).join('');
+
+  const teamFilter = teamSelect.value;
 
   const filtered = available.filter(p => {
     if (search && !p.name.toLowerCase().includes(search) &&
         !(p.position || '').toLowerCase().includes(search) &&
         !(p.team_affiliation || '').toLowerCase().includes(search)) return false;
     if (posFilter && p.position !== posFilter) return false;
+    if (teamFilter && p.team_affiliation !== teamFilter) return false;
     return true;
   });
 
@@ -660,6 +670,7 @@ document.getElementById('copy-id-btn-waiting')?.addEventListener('click', copyDr
 // ── Search & filter ───────────────────────────────────────────────────────────
 document.getElementById('player-search')?.addEventListener('input', () => { if (state) render(); });
 document.getElementById('pos-filter')?.addEventListener('change', () => { if (state) render(); });
+document.getElementById('team-filter')?.addEventListener('change', () => { if (state) render(); });
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 function getTeamIndex(pickNumber, numTeams, format) {

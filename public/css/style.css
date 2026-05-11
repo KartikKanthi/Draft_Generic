@@ -324,9 +324,10 @@ body.draft-page {
   padding: 10px 12px;
   border-bottom: 1px solid var(--border);
   flex-shrink: 0;
+  flex-wrap: wrap;
 }
-.search-row input { flex: 1; }
-.search-row select { width: 100px; flex-shrink: 0; }
+.search-row input { flex: 1; min-width: 80px; }
+.search-row select { width: 90px; flex-shrink: 0; }
 
 #player-list {
   flex: 1;
