@@ -119,7 +119,7 @@ document.getElementById('join-form').addEventListener('submit', async (e) => {
     localStorage.setItem(`team_${draftId}_id`, data.team_id);
     localStorage.setItem(`team_${draftId}_token`, data.token);
 
-    window.location.href = `/draft.html?id=${draftId}`;
+    window.location.href = `/draft.html?id=${draftId}&token=${data.token}`;
   } catch (err) {
     toast(err.message, 'error');
     btn.disabled = false;

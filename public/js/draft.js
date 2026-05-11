@@ -4,6 +4,24 @@ const DRAFT_ID = params.get('id');
 if (!DRAFT_ID) { location.href = '/'; }
 
 const COMMISSIONER_TOKEN = localStorage.getItem(`commissioner_${DRAFT_ID}`);
+
+// Restore team credentials from URL token param (rejoin flow)
+const urlToken = params.get('token');
+if (urlToken && !localStorage.getItem(`team_${DRAFT_ID}_token`)) {
+  // Fetch the team ID for this token from the server
+  fetch(`/api/drafts/${DRAFT_ID}/team-by-token`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ token: urlToken })
+  }).then(r => r.ok ? r.json() : null).then(data => {
+    if (data?.team_id) {
+      localStorage.setItem(`team_${DRAFT_ID}_id`, data.team_id);
+      localStorage.setItem(`team_${DRAFT_ID}_token`, urlToken);
+      location.replace(`/draft.html?id=${DRAFT_ID}`);
+    }
+  });
+}
+
 let MY_TEAM_ID = localStorage.getItem(`team_${DRAFT_ID}_id`);
 let MY_TEAM_TOKEN = localStorage.getItem(`team_${DRAFT_ID}_token`);
 
@@ -126,6 +144,16 @@ function renderWaiting() {
   // Show join-as-team section if this browser hasn't joined as a team yet
   const joinSection = document.getElementById('join-as-team-section');
   joinSection.style.display = !MY_TEAM_ID ? 'block' : 'none';
+
+  // Show personal rejoin link if this browser has a team token
+  const myLinkSection = document.getElementById('my-link-section');
+  if (MY_TEAM_TOKEN) {
+    myLinkSection.style.display = 'block';
+    document.getElementById('my-rejoin-link').value =
+      `${location.origin}/draft.html?id=${DRAFT_ID}&token=${MY_TEAM_TOKEN}`;
+  } else {
+    myLinkSection.style.display = 'none';
+  }
 }
 
 function renderActive() {
@@ -603,6 +631,11 @@ document.getElementById('skip-nomination-btn')?.addEventListener('click', () => 
 });
 
 // ── Commissioner Controls ─────────────────────────────────────────────────────
+document.getElementById('copy-my-link-btn')?.addEventListener('click', () => {
+  const link = `${location.origin}/draft.html?id=${DRAFT_ID}&token=${MY_TEAM_TOKEN}`;
+  navigator.clipboard.writeText(link).then(() => toast('Personal link copied!', 'success'));
+});
+
 document.getElementById('join-as-team-btn')?.addEventListener('click', async () => {
   const name = document.getElementById('join-team-name').value.trim();
   if (!name) { toast('Enter a team name', 'error'); return; }

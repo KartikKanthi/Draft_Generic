@@ -279,6 +279,14 @@ app.get('/api/drafts/:id', (req, res) => {
   res.json(state);
 });
 
+app.post('/api/drafts/:id/team-by-token', (req, res) => {
+  const { token } = req.body;
+  if (!token) return res.status(400).json({ error: 'token required' });
+  const team = db.prepare('SELECT id FROM teams WHERE draft_id = ? AND token = ?').get(req.params.id, token);
+  if (!team) return res.status(404).json({ error: 'Team not found' });
+  res.json({ team_id: team.id });
+});
+
 app.delete('/api/drafts/:id', (req, res) => {
   const draft = db.prepare('SELECT * FROM drafts WHERE id = ?').get(req.params.id);
   if (!draft) return res.status(404).json({ error: 'Draft not found' });
