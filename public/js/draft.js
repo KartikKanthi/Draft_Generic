@@ -492,23 +492,24 @@ function renderMyTeam() {
   }
 
   // Position requirements tracker
-  const reqs = state.position_requirements ? JSON.parse(state.position_requirements) : null;
   const myPicks = state.players
     .filter(p => p.drafted_by === MY_TEAM_ID)
     .sort((a, b) => a.pick_number - b.pick_number);
 
-  if (reqs && Object.keys(reqs).length > 0) {
+  const reqs = parseRequirements(state.position_requirements);
+  if (reqs.length > 0) {
     const counts = {};
     myPicks.forEach(p => {
       const pos = (p.position || '').toUpperCase();
       counts[pos] = (counts[pos] || 0) + 1;
     });
-    const trackerHtml = Object.entries(reqs).map(([pos, min]) => {
-      const have = counts[pos] || 0;
+    const trackerHtml = reqs.map(({ positions, min }) => {
+      const have = positions.reduce((sum, pos) => sum + (counts[pos] || 0), 0);
       const met = have >= min;
       const color = met ? 'var(--success)' : have > 0 ? 'var(--warning)' : 'var(--danger)';
+      const label = positions.join(' / ');
       return `<div style="display:flex;justify-content:space-between;align-items:center;padding:3px 0;font-size:12px">
-        <span style="color:var(--text-muted)">${escHtml(pos)}</span>
+        <span style="color:var(--text-muted)">${escHtml(label)}</span>
         <span style="color:${color};font-weight:600">${have}/${min}${met ? ' ✓' : ''}</span>
       </div>`;
     }).join('');
@@ -737,6 +738,16 @@ function getTeamIndex(pickNumber, numTeams, format) {
   const pickInRound = pickNumber % numTeams;
   if (format === 'snake') return round % 2 === 0 ? pickInRound : numTeams - 1 - pickInRound;
   return pickInRound;
+}
+
+function parseRequirements(raw) {
+  if (!raw) return [];
+  const parsed = JSON.parse(raw);
+  // Handle old format: { "GK": 1, "DEF": 4 } → convert to array format
+  if (!Array.isArray(parsed)) {
+    return Object.entries(parsed).map(([pos, min]) => ({ positions: [pos], min }));
+  }
+  return parsed;
 }
 
 function escHtml(str) {
