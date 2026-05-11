@@ -310,15 +310,17 @@ function renderDraftBoard(onClockTeam) {
     html += `<div class="${cls}" title="${escHtml(team.name)}">${escHtml(team.name)}</div>`;
   }
 
-  // Round rows
+  // Round rows — iterate by team column so each column always shows the same team
   for (let round = 0; round < totalRounds; round++) {
     html += `<div class="round-label">${round + 1}</div>`;
-    for (let col = 0; col < numTeams; col++) {
-      const pickNum = round * numTeams + col;
-      const teamIdx = getTeamIndex(pickNum, numTeams, state.format);
+    for (let teamIdx = 0; teamIdx < numTeams; teamIdx++) {
+      // For snake, reverse the pick order in odd rounds
+      const pickNum = state.format === 'snake' && round % 2 !== 0
+        ? round * numTeams + (numTeams - 1 - teamIdx)
+        : round * numTeams + teamIdx;
       const team = teams[teamIdx];
       const isMe = team?.id === MY_TEAM_ID;
-      const isClock = team?.id === onClockTeam?.id && pickNum === state.current_pick;
+      const isClock = pickNum === state.current_pick;
       const pick = pickMap[pickNum];
 
       let cls = 'board-cell';
