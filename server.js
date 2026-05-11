@@ -440,6 +440,16 @@ io.on('connection', (socket) => {
       return;
     }
 
+    // Must beat the current highest bid
+    const topBid = db.prepare(`
+      SELECT MAX(amount) as top FROM bids WHERE draft_id = ? AND player_id = ?
+    `).get(draftId, draft.current_nomination);
+    const currentTop = topBid?.top || 0;
+    if (bid <= currentTop) {
+      socket.emit('error', { message: `Bid must be higher than current top bid of $${currentTop}` });
+      return;
+    }
+
     db.prepare(`
       INSERT INTO bids (id, draft_id, player_id, team_id, amount)
       VALUES (?, ?, ?, ?, ?)

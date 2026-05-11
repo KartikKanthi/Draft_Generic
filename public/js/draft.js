@@ -80,6 +80,14 @@ socket.on('bid-placed', ({ teamId, teamName, amount }) => {
     }
     state.current_bids.sort((a, b) => b.amount - a.amount);
     renderAuctionBids();
+    // Update bid input minimum
+    const topBid = state.current_bids[0]?.amount || 0;
+    const bidInput = document.getElementById('bid-amount');
+    if (bidInput) {
+      bidInput.min = topBid + 1;
+      const myTeam = state.teams.find(t => t.id === MY_TEAM_ID);
+      bidInput.placeholder = `Min $${topBid + 1} — Max $${myTeam?.budget || '?'}`;
+    }
   }
 });
 
@@ -461,8 +469,11 @@ function renderAuctionPanel() {
     const myTeam = state.teams.find(t => t.id === MY_TEAM_ID);
     bidInputRow.style.display = myTeam && myTeam.budget > 0 ? 'flex' : 'none';
     const bidInput = document.getElementById('bid-amount');
+    const topBid = (state.current_bids || []).length > 0 ? state.current_bids[0].amount : 0;
+    const minBid = topBid + 1;
+    bidInput.min = minBid;
     bidInput.max = myTeam?.budget || 1;
-    bidInput.placeholder = `$1 – $${myTeam?.budget || '?'}`;
+    bidInput.placeholder = `Min $${minBid} — Max $${myTeam?.budget || '?'}`;
   } else {
     bidInputRow.style.display = 'none';
   }
