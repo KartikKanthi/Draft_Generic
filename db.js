@@ -1,9 +1,11 @@
 import { DatabaseSync } from 'node:sqlite';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
+import { mkdirSync } from 'fs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const dbPath = process.env.DB_PATH || join(__dirname, 'draft.db');
+mkdirSync(dirname(dbPath), { recursive: true });
 const _db = new DatabaseSync(dbPath);
 
 _db.exec('PRAGMA journal_mode = WAL');
