@@ -220,7 +220,7 @@ function closeAuction(draftId) {
 
 app.post('/api/drafts', upload.single('players_csv'), (req, res) => {
   try {
-    const { name, format, mode, num_teams, pick_timer, auction_budget } = req.body;
+    const { name, format, mode, num_teams, pick_timer, auction_budget, position_requirements } = req.body;
     if (!name?.trim() || !format || !mode || !num_teams)
       return res.status(400).json({ error: 'Missing required fields' });
 
@@ -232,11 +232,12 @@ app.post('/api/drafts', upload.single('players_csv'), (req, res) => {
     const commissionerToken = randomUUID();
     const timer = Math.max(0, parseInt(pick_timer) || 90);
     const budget = Math.max(1, parseInt(auction_budget) || 200);
+    const posReqs = position_requirements || null;
 
     db.prepare(`
-      INSERT INTO drafts (id, name, format, mode, num_teams, pick_timer, auction_budget, commissioner_token)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(draftId, name.trim(), format, mode, numTeams, timer, budget, commissionerToken);
+      INSERT INTO drafts (id, name, format, mode, num_teams, pick_timer, auction_budget, commissioner_token, position_requirements)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(draftId, name.trim(), format, mode, numTeams, timer, budget, commissionerToken, posReqs);
 
     let playerCount = 0;
     if (req.file) {

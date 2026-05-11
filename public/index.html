@@ -61,6 +61,12 @@
         </div>
 
         <div class="form-group">
+          <label>Position Requirements <small style="color:var(--text-muted)">(optional)</small></label>
+          <div id="pos-reqs-list" style="display:flex;flex-direction:column;gap:6px;margin-bottom:8px"></div>
+          <button type="button" class="btn btn-sm" id="add-pos-req-btn">+ Add Position</button>
+        </div>
+
+        <div class="form-group">
           <label>Player Pool CSV <small style="color:var(--text-muted)">(optional — can upload later)</small></label>
           <div class="file-drop" id="csv-drop">
             <input type="file" name="players_csv" accept=".csv" id="csv-input">

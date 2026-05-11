@@ -463,12 +463,38 @@ function renderMyTeam() {
     myBudgetEl.style.display = 'none';
   }
 
+  // Position requirements tracker
+  const reqs = state.position_requirements ? JSON.parse(state.position_requirements) : null;
   const myPicks = state.players
     .filter(p => p.drafted_by === MY_TEAM_ID)
     .sort((a, b) => a.pick_number - b.pick_number);
 
+  if (reqs && Object.keys(reqs).length > 0) {
+    const counts = {};
+    myPicks.forEach(p => {
+      const pos = (p.position || '').toUpperCase();
+      counts[pos] = (counts[pos] || 0) + 1;
+    });
+    const trackerHtml = Object.entries(reqs).map(([pos, min]) => {
+      const have = counts[pos] || 0;
+      const met = have >= min;
+      const color = met ? 'var(--success)' : have > 0 ? 'var(--warning)' : 'var(--danger)';
+      return `<div style="display:flex;justify-content:space-between;align-items:center;padding:3px 0;font-size:12px">
+        <span style="color:var(--text-muted)">${escHtml(pos)}</span>
+        <span style="color:${color};font-weight:600">${have}/${min}${met ? ' ✓' : ''}</span>
+      </div>`;
+    }).join('');
+    myPicksEl.innerHTML = `
+      <div style="border:1px solid var(--border);border-radius:var(--radius-sm);padding:8px;margin-bottom:8px">
+        <div style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;color:var(--text-muted);margin-bottom:6px">Requirements</div>
+        ${trackerHtml}
+      </div>`;
+  } else {
+    myPicksEl.innerHTML = '';
+  }
+
   const numTeams = state.teams.length;
-  myPicksEl.innerHTML = myPicks.map(p => {
+  myPicksEl.innerHTML += myPicks.map(p => {
     const round = Math.floor(p.pick_number / numTeams) + 1;
     return `<div class="my-pick-item">
       <span class="pick-round">R${round}</span>

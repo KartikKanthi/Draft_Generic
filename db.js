@@ -60,6 +60,9 @@ _db.exec(`
   );
 `);
 
+// Migrate: add position_requirements column if it doesn't exist yet
+try { _db.exec('ALTER TABLE drafts ADD COLUMN position_requirements TEXT'); } catch {}
+
 // Wrap node:sqlite to provide a better-sqlite3-compatible API surface
 const db = {
   prepare: (sql) => _db.prepare(sql),

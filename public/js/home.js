@@ -29,6 +29,29 @@ modeSelect.addEventListener('change', () => {
   }
 });
 
+// ── Position Requirements ─────────────────────────────────────────────────────
+document.getElementById('add-pos-req-btn').addEventListener('click', () => {
+  const row = document.createElement('div');
+  row.style.cssText = 'display:flex;gap:6px;align-items:center';
+  row.innerHTML = `
+    <input type="text" placeholder="Position (e.g. GK)" style="width:120px" class="pos-req-name">
+    <input type="number" placeholder="Min" min="1" style="width:70px" class="pos-req-min">
+    <button type="button" class="btn btn-sm btn-danger" style="padding:5px 8px">✕</button>
+  `;
+  row.querySelector('button').addEventListener('click', () => row.remove());
+  document.getElementById('pos-reqs-list').appendChild(row);
+});
+
+function getPositionRequirements() {
+  const reqs = {};
+  document.querySelectorAll('#pos-reqs-list > div').forEach(row => {
+    const pos = row.querySelector('.pos-req-name').value.trim().toUpperCase();
+    const min = parseInt(row.querySelector('.pos-req-min').value);
+    if (pos && !isNaN(min) && min > 0) reqs[pos] = min;
+  });
+  return Object.keys(reqs).length ? JSON.stringify(reqs) : null;
+}
+
 // ── CSV file preview ──────────────────────────────────────────────────────────
 document.getElementById('csv-input').addEventListener('change', (e) => {
   const f = e.target.files[0];
@@ -53,6 +76,8 @@ document.getElementById('create-form').addEventListener('submit', async (e) => {
   btn.textContent = 'Creating…';
 
   const fd = new FormData(form);
+  const posReqs = getPositionRequirements();
+  if (posReqs) fd.append('position_requirements', posReqs);
 
   try {
     const res = await fetch('/api/drafts', { method: 'POST', body: fd });
