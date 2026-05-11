@@ -39,6 +39,15 @@
       </div>
 
       <!-- Commissioner-only controls -->
+      <!-- Join as team (shown to anyone without a team token, including commissioner) -->
+      <div id="join-as-team-section" style="display:none" class="waiting-section">
+        <h3>Join as a Team</h3>
+        <div style="display:flex;gap:8px">
+          <input type="text" id="join-team-name" placeholder="Your team name" style="max-width:240px">
+          <button class="btn btn-primary" id="join-as-team-btn">Join</button>
+        </div>
+      </div>
+
       <div id="commissioner-waiting" style="display:none">
         <button class="btn btn-danger btn-sm" style="margin-bottom:16px" id="delete-draft-btn-waiting">Delete Draft</button>
         <div class="waiting-section">

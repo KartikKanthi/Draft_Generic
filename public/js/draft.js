@@ -4,8 +4,8 @@ const DRAFT_ID = params.get('id');
 if (!DRAFT_ID) { location.href = '/'; }
 
 const COMMISSIONER_TOKEN = localStorage.getItem(`commissioner_${DRAFT_ID}`);
-const MY_TEAM_ID = localStorage.getItem(`team_${DRAFT_ID}_id`);
-const MY_TEAM_TOKEN = localStorage.getItem(`team_${DRAFT_ID}_token`);
+let MY_TEAM_ID = localStorage.getItem(`team_${DRAFT_ID}_id`);
+let MY_TEAM_TOKEN = localStorage.getItem(`team_${DRAFT_ID}_token`);
 
 let state = null;
 let isCommissioner = !!COMMISSIONER_TOKEN;
@@ -122,6 +122,10 @@ function renderWaiting() {
   } else {
     commDiv.style.display = 'none';
   }
+
+  // Show join-as-team section if this browser hasn't joined as a team yet
+  const joinSection = document.getElementById('join-as-team-section');
+  joinSection.style.display = !MY_TEAM_ID ? 'block' : 'none';
 }
 
 function renderActive() {
@@ -561,6 +565,34 @@ document.getElementById('skip-nomination-btn')?.addEventListener('click', () => 
 });
 
 // ── Commissioner Controls ─────────────────────────────────────────────────────
+document.getElementById('join-as-team-btn')?.addEventListener('click', async () => {
+  const name = document.getElementById('join-team-name').value.trim();
+  if (!name) { toast('Enter a team name', 'error'); return; }
+  try {
+    const res = await fetch(`/api/drafts/${DRAFT_ID}/join`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ team_name: name })
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error);
+    MY_TEAM_ID = data.team_id;
+    MY_TEAM_TOKEN = data.token;
+    localStorage.setItem(`team_${DRAFT_ID}_id`, data.team_id);
+    localStorage.setItem(`team_${DRAFT_ID}_token`, data.token);
+    document.getElementById('join-as-team-section').style.display = 'none';
+    toast(`Joined as "${name}"`, 'success');
+    // Re-join socket with team token so server knows this socket is now a team
+    socket.emit('join-draft', {
+      draftId: DRAFT_ID,
+      commissionerToken: COMMISSIONER_TOKEN || undefined,
+      teamToken: data.token
+    });
+  } catch (err) {
+    toast(err.message, 'error');
+  }
+});
+
 document.getElementById('start-draft-btn')?.addEventListener('click', () => {
   socket.emit('start-draft', { commissionerToken: COMMISSIONER_TOKEN });
 });
