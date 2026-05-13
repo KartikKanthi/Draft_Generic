@@ -152,11 +152,11 @@
         </div>
       </div>
       <div class="auction-actions">
-        <div id="nominate-hint" style="display:none">
-          <p style="color:var(--text-muted);font-size:12px">Click a player to nominate</p>
-        </div>
+        <div id="nominate-hint" style="display:none"></div>
         <div id="commissioner-auction-btns" style="display:none">
           <button class="btn btn-sm btn-success" id="close-auction-btn">Close Bidding</button>
+          <button class="btn btn-sm" style="background:var(--warning);color:#000;border-color:var(--warning)" id="pause-auction-btn">Pause</button>
+          <button class="btn btn-sm btn-primary" id="resume-auction-btn" style="display:none">Resume</button>
           <button class="btn btn-sm" id="skip-nomination-btn">Skip Player</button>
         </div>
       </div>

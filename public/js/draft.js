@@ -222,13 +222,13 @@ function renderStatusBar(onClockTeam) {
   const timerEl = document.getElementById('timer-display');
 
   if (state.format === 'auction') {
-    if (state.current_nomination) {
+    if (state.auction_paused) {
+      info.innerHTML = `<span style="color:var(--warning)">⏸ Auction Paused</span>`;
+    } else if (state.current_nomination) {
       const nominatedPlayer = state.players.find(p => p.id === state.current_nomination);
       info.innerHTML = `<span class="other-turn">Auction: <strong>${escHtml(nominatedPlayer?.name || '?')}</strong></span>`;
-    } else if (isCommissioner) {
-      info.innerHTML = `<span class="my-turn">Select a player to nominate →</span>`;
     } else {
-      info.innerHTML = `<span class="other-turn">Waiting for commissioner to nominate…</span>`;
+      info.innerHTML = `<span class="other-turn">Loading next player…</span>`;
     }
     timerEl.style.display = 'none';
   } else if (onClockTeam) {
@@ -309,14 +309,18 @@ function renderPlayerPool(onClockTeam) {
   });
 
   const isMyTurn = onClockTeam?.id === MY_TEAM_ID;
-  const isNominateMode = state.format === 'auction' && isCommissioner && !state.current_nomination;
 
   const list = document.getElementById('player-list');
   list.innerHTML = filtered.map(p => {
     let cls = 'player-item';
-    if (state.format !== 'auction' && isMyTurn) cls += ' my-turn-active';
-    else if (state.format !== 'auction' && !isMyTurn) cls += ' disabled';
-    if (isNominateMode) cls += ' nominate-mode';
+    if (state.format === 'auction') {
+      if (p.id === state.current_nomination) cls += ' on-clock';
+      else cls += ' disabled';
+    } else if (isMyTurn) {
+      cls += ' my-turn-active';
+    } else {
+      cls += ' disabled';
+    }
 
     const extras = Object.entries(p.metadata || {}).map(([k, v]) => `${k}: ${v}`).join(' · ');
 
@@ -329,13 +333,11 @@ function renderPlayerPool(onClockTeam) {
     </div>`;
   }).join('') || `<div style="padding:20px;text-align:center;color:var(--text-muted)">No players found</div>`;
 
-  // Click handlers
+  // Click handlers (non-auction only)
   list.querySelectorAll('.player-item:not(.disabled)').forEach(el => {
     el.addEventListener('click', () => {
       const playerId = el.dataset.id;
-      if (isNominateMode) {
-        socket.emit('nominate-player', { commissionerToken: COMMISSIONER_TOKEN, playerId });
-      } else if (isMyTurn && state.format !== 'auction') {
+      if (isMyTurn && state.format !== 'auction') {
         showPickModal(playerId);
       }
     });
@@ -451,22 +453,46 @@ function renderAuctionPanel() {
   const bidInputRow = document.getElementById('bid-input-row');
   const nominateHint = document.getElementById('nominate-hint');
   const commAuctionBtns = document.getElementById('commissioner-auction-btns');
+  const pauseBtn = document.getElementById('pause-auction-btn');
+  const resumeBtn = document.getElementById('resume-auction-btn');
+  const closeBidBtn = document.getElementById('close-auction-btn');
+  const skipBtn = document.getElementById('skip-nomination-btn');
 
   if (!state.current_nomination) {
-    // No active nomination
-    nominatedCard.innerHTML = `<div style="color:var(--text-muted);font-size:13px">No active nomination</div>`;
+    nominatedCard.innerHTML = `<div style="color:var(--text-muted);font-size:13px">${state.auction_paused ? '⏸ Auction paused' : 'Loading next player…'}</div>`;
     document.getElementById('bids-list').innerHTML = '';
     document.getElementById('auction-timer').style.display = 'none';
     bidInputRow.style.display = 'none';
-    nominateHint.style.display = isCommissioner ? 'block' : 'none';
-    commAuctionBtns.style.display = 'none';
+    nominateHint.style.display = 'none';
+    if (isCommissioner && state.auction_paused) {
+      commAuctionBtns.style.display = 'flex';
+      pauseBtn.style.display = 'none';
+      resumeBtn.style.display = '';
+      closeBidBtn.style.display = 'none';
+      skipBtn.style.display = 'none';
+    } else {
+      commAuctionBtns.style.display = 'none';
+    }
     panel.style.display = state.status === 'active' ? 'grid' : 'none';
     return;
   }
 
   panel.style.display = 'grid';
   nominateHint.style.display = 'none';
-  commAuctionBtns.style.display = isCommissioner ? 'flex' : 'none';
+  if (isCommissioner) {
+    commAuctionBtns.style.display = 'flex';
+    closeBidBtn.style.display = '';
+    skipBtn.style.display = '';
+    if (state.auction_paused) {
+      pauseBtn.style.display = 'none';
+      resumeBtn.style.display = '';
+    } else {
+      pauseBtn.style.display = '';
+      resumeBtn.style.display = 'none';
+    }
+  } else {
+    commAuctionBtns.style.display = 'none';
+  }
 
   const player = state.players.find(p => p.id === state.current_nomination);
   if (player) {
@@ -475,6 +501,7 @@ function renderAuctionPanel() {
       <div class="player-details">
         ${player.position ? `Position: ${escHtml(player.position)}` : ''}
         ${player.team_affiliation ? ` · ${escHtml(player.team_affiliation)}` : ''}
+        ${state.auction_paused ? '<span style="color:var(--warning);margin-left:8px">⏸ Paused</span>' : ''}
       </div>`;
   }
 
@@ -671,6 +698,14 @@ document.getElementById('place-bid-btn')?.addEventListener('click', () => {
 
 document.getElementById('close-auction-btn')?.addEventListener('click', () => {
   socket.emit('close-auction', { commissionerToken: COMMISSIONER_TOKEN });
+});
+
+document.getElementById('pause-auction-btn')?.addEventListener('click', () => {
+  socket.emit('pause-auction', { commissionerToken: COMMISSIONER_TOKEN });
+});
+
+document.getElementById('resume-auction-btn')?.addEventListener('click', () => {
+  socket.emit('resume-auction', { commissionerToken: COMMISSIONER_TOKEN });
 });
 
 document.getElementById('skip-nomination-btn')?.addEventListener('click', () => {

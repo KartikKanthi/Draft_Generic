@@ -168,6 +168,13 @@ function processPick(draftId, playerId, teamToken, isAutoPick = false) {
 
 // ── Auction Logic ─────────────────────────────────────────────────────────────
 
+function autoNominateNext(draftId) {
+  const next = db.prepare(
+    'SELECT id FROM players WHERE draft_id = ? AND drafted_by IS NULL ORDER BY rowid LIMIT 1'
+  ).get(draftId);
+  if (next) startNomination(draftId, next.id);
+}
+
 function startNomination(draftId, playerId) {
   const draft = db.prepare('SELECT * FROM drafts WHERE id = ?').get(draftId);
   if (!draft || draft.status !== 'active') return;
@@ -181,7 +188,7 @@ function startNomination(draftId, playerId) {
   db.prepare('UPDATE drafts SET current_nomination = ?, nomination_ends_at = ? WHERE id = ?')
     .run(playerId, endsAt, draftId);
 
-  if (draft.mode === 'live') startPickTimer(draftId);
+  if (draft.mode === 'live' && !draft.auction_paused) startPickTimer(draftId);
 
   const state = getDraftState(draftId);
   io.to(`draft:${draftId}`).emit('draft-state', state);
@@ -228,6 +235,11 @@ function closeAuction(draftId) {
     amount: winAmount
   });
   io.to(`draft:${draftId}`).emit('draft-state', state);
+
+  const updatedDraft = db.prepare('SELECT * FROM drafts WHERE id = ?').get(draftId);
+  if (updatedDraft?.status === 'active' && !updatedDraft.auction_paused) {
+    autoNominateNext(draftId);
+  }
 }
 
 // ── API Routes ────────────────────────────────────────────────────────────────
@@ -390,6 +402,7 @@ io.on('connection', (socket) => {
     io.to(`draft:${draftId}`).emit('draft-started', {});
 
     if (draft.format !== 'auction' && draft.mode === 'live') startPickTimer(draftId);
+    else if (draft.format === 'auction') autoNominateNext(draftId);
   });
 
   socket.on('make-pick', ({ teamToken, playerId }) => {
@@ -492,8 +505,55 @@ io.on('connection', (socket) => {
     db.prepare(
       'UPDATE drafts SET current_nomination = NULL, nomination_ends_at = NULL WHERE id = ?'
     ).run(draftId);
+    const updatedDraft = db.prepare('SELECT * FROM drafts WHERE id = ?').get(draftId);
+    if (!updatedDraft.auction_paused) {
+      autoNominateNext(draftId);
+    } else {
+      const state = getDraftState(draftId);
+      io.to(`draft:${draftId}`).emit('draft-state', state);
+    }
+  });
+
+  socket.on('pause-auction', ({ commissionerToken }) => {
+    const { draftId } = socket.data;
+    if (!draftId) return;
+    const draft = db.prepare('SELECT * FROM drafts WHERE id = ?').get(draftId);
+    if (!draft || draft.commissioner_token !== commissionerToken) return;
+    if (draft.format !== 'auction' || draft.status !== 'active' || draft.auction_paused) return;
+
+    const currentTimer = activeTimers.get(draftId);
+    const remaining = currentTimer ? Math.max(0, currentTimer.endsAt - Date.now()) : null;
+    clearPickTimer(draftId);
+
+    db.prepare('UPDATE drafts SET auction_paused = 1, nomination_paused_remaining_ms = ? WHERE id = ?')
+      .run(remaining, draftId);
+
     const state = getDraftState(draftId);
     io.to(`draft:${draftId}`).emit('draft-state', state);
+  });
+
+  socket.on('resume-auction', ({ commissionerToken }) => {
+    const { draftId } = socket.data;
+    if (!draftId) return;
+    const draft = db.prepare('SELECT * FROM drafts WHERE id = ?').get(draftId);
+    if (!draft || draft.commissioner_token !== commissionerToken) return;
+    if (draft.format !== 'auction' || draft.status !== 'active' || !draft.auction_paused) return;
+
+    db.prepare('UPDATE drafts SET auction_paused = 0, nomination_paused_remaining_ms = NULL WHERE id = ?')
+      .run(draftId);
+
+    if (draft.current_nomination) {
+      if (draft.mode === 'live' && draft.nomination_paused_remaining_ms > 0) {
+        const newEndsAt = Date.now() + draft.nomination_paused_remaining_ms;
+        db.prepare('UPDATE drafts SET nomination_ends_at = ? WHERE id = ?')
+          .run(new Date(newEndsAt).toISOString(), draftId);
+        startPickTimer(draftId, newEndsAt);
+      }
+      const state = getDraftState(draftId);
+      io.to(`draft:${draftId}`).emit('draft-state', state);
+    } else {
+      autoNominateNext(draftId);
+    }
   });
 
   socket.on('complete-draft', ({ commissionerToken }) => {

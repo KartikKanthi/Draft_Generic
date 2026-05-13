@@ -62,6 +62,8 @@ _db.exec(`
 
 // Migrate: add position_requirements column if it doesn't exist yet
 try { _db.exec('ALTER TABLE drafts ADD COLUMN position_requirements TEXT'); } catch {}
+try { _db.exec('ALTER TABLE drafts ADD COLUMN auction_paused INTEGER NOT NULL DEFAULT 0'); } catch {}
+try { _db.exec('ALTER TABLE drafts ADD COLUMN nomination_paused_remaining_ms INTEGER'); } catch {}
 
 // Wrap node:sqlite to provide a better-sqlite3-compatible API surface
 const db = {
