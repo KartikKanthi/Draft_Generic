@@ -92,7 +92,11 @@ socket.on('bid-placed', ({ teamId, teamName, amount }) => {
 });
 
 socket.on('auction-closed', ({ player, team, amount }) => {
-  toast(`${team.name} won ${player.name} for $${amount}`, 'success');
+  if (team) {
+    toast(`${team.name} won ${player.name} for $${amount}`, 'success');
+  } else {
+    toast(`${player.name} went unsold`, 'info');
+  }
 });
 
 socket.on('error', ({ message }) => {
@@ -277,7 +281,7 @@ function renderTimer(remaining) {
 }
 
 function renderPlayerPool(onClockTeam) {
-  const available = state.players.filter(p => !p.drafted_by);
+  const available = state.players.filter(p => !p.drafted_by && !p.unsold);
   document.getElementById('available-count').textContent = available.length;
 
   const search = document.getElementById('player-search').value.toLowerCase();
@@ -434,17 +438,28 @@ function renderBoardList(picks, teams) {
 }
 
 function renderAuctionBoard() {
-  const picks = state.players.filter(p => p.drafted_by);
+  const sold = state.players.filter(p => p.drafted_by);
+  const unsold = state.players.filter(p => p.unsold);
   const teamMap = Object.fromEntries(state.teams.map(t => [t.id, t]));
-  const sorted = [...picks].sort((a, b) => a.pick_number - b.pick_number);
-  document.getElementById('draft-board').innerHTML = sorted.map(p => {
+  const sortedSold = [...sold].sort((a, b) => a.pick_number - b.pick_number);
+  const soldHtml = sortedSold.map(p => {
     const team = teamMap[p.drafted_by];
     return `<div class="auction-result">
       <span>${escHtml(p.name)}${p.position ? ` <span style="color:var(--text-muted)">(${escHtml(p.position)})</span>` : ''}</span>
-      <span class="bid-amount">$${p.bid_amount || 1}</span>
+      <span class="bid-amount">$${p.bid_amount}</span>
       <span style="color:var(--text-muted);font-size:12px">${escHtml(team?.name || '?')}</span>
     </div>`;
-  }).join('') || `<div style="padding:20px;text-align:center;color:var(--text-muted)">No picks yet</div>`;
+  }).join('');
+  const unsoldHtml = unsold.map(p =>
+    `<div class="auction-result" style="opacity:0.5">
+      <span>${escHtml(p.name)}${p.position ? ` <span style="color:var(--text-muted)">(${escHtml(p.position)})</span>` : ''}</span>
+      <span style="color:var(--danger);font-size:12px">Unsold</span>
+      <span></span>
+    </div>`
+  ).join('');
+  document.getElementById('draft-board').innerHTML =
+    soldHtml + unsoldHtml ||
+    `<div style="padding:20px;text-align:center;color:var(--text-muted)">No picks yet</div>`;
 }
 
 function renderAuctionPanel() {
@@ -873,7 +888,9 @@ function updatePickCounter() {
     el.textContent = `Pick ${state.current_pick + 1} of ${total}`;
   } else if (state.status === 'active' && state.format === 'auction') {
     const drafted = state.players.filter(p => p.drafted_by).length;
-    el.textContent = `${drafted} / ${state.players.length} players auctioned`;
+    const unsold = state.players.filter(p => p.unsold).length;
+    const total = state.players.length - unsold;
+    el.textContent = `${drafted} / ${total} players auctioned${unsold ? ` · ${unsold} unsold` : ''}`;
   } else {
     el.textContent = '';
   }

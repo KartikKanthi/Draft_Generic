@@ -64,6 +64,7 @@ _db.exec(`
 try { _db.exec('ALTER TABLE drafts ADD COLUMN position_requirements TEXT'); } catch {}
 try { _db.exec('ALTER TABLE drafts ADD COLUMN auction_paused INTEGER NOT NULL DEFAULT 0'); } catch {}
 try { _db.exec('ALTER TABLE drafts ADD COLUMN nomination_paused_remaining_ms INTEGER'); } catch {}
+try { _db.exec('ALTER TABLE players ADD COLUMN unsold INTEGER NOT NULL DEFAULT 0'); } catch {}
 
 // Wrap node:sqlite to provide a better-sqlite3-compatible API surface
 const db = {

@@ -170,7 +170,7 @@ function processPick(draftId, playerId, teamToken, isAutoPick = false) {
 
 function autoNominateNext(draftId) {
   const next = db.prepare(
-    'SELECT id FROM players WHERE draft_id = ? AND drafted_by IS NULL ORDER BY rowid LIMIT 1'
+    'SELECT id FROM players WHERE draft_id = ? AND drafted_by IS NULL AND unsold = 0 ORDER BY rowid LIMIT 1'
   ).get(draftId);
   if (next) startNomination(draftId, next.id);
 }
@@ -205,35 +205,47 @@ function closeAuction(draftId) {
     ORDER BY b.amount DESC, b.created_at ASC LIMIT 1
   `).get(draftId, draft.current_nomination);
 
-  const teams = db.prepare('SELECT * FROM teams WHERE draft_id = ? ORDER BY pick_order').all(draftId);
-  const winnerId = topBid ? topBid.team_id : teams[0]?.id;
-  const winAmount = topBid ? topBid.amount : 1;
+  const wonPlayer = db.prepare('SELECT * FROM players WHERE id = ?').get(draft.current_nomination);
 
-  if (winnerId) {
+  if (!topBid) {
+    // No bids — mark unsold and move on
+    db.prepare('UPDATE players SET unsold = 1 WHERE id = ?').run(draft.current_nomination);
+    db.prepare(
+      'UPDATE drafts SET current_nomination = NULL, nomination_ends_at = NULL WHERE id = ?'
+    ).run(draftId);
+    io.to(`draft:${draftId}`).emit('auction-closed', {
+      player: { id: wonPlayer?.id, name: wonPlayer?.name },
+      team: null,
+      amount: null
+    });
+  } else {
+    const teams = db.prepare('SELECT * FROM teams WHERE draft_id = ? ORDER BY pick_order').all(draftId);
+    const winnerId = topBid.team_id;
+    const winAmount = topBid.amount;
+    const winnerTeam = teams.find(t => t.id === winnerId);
+
     db.prepare('UPDATE players SET drafted_by = ?, pick_number = ?, bid_amount = ? WHERE id = ?')
       .run(winnerId, draft.current_pick, winAmount, draft.current_nomination);
     db.prepare('UPDATE teams SET budget = budget - ? WHERE id = ?').run(winAmount, winnerId);
+    db.prepare(
+      'UPDATE drafts SET current_pick = current_pick + 1, current_nomination = NULL, nomination_ends_at = NULL WHERE id = ?'
+    ).run(draftId);
+
+    io.to(`draft:${draftId}`).emit('auction-closed', {
+      player: { id: wonPlayer?.id, name: wonPlayer?.name },
+      team: { id: winnerId, name: winnerTeam?.name },
+      amount: winAmount
+    });
   }
 
-  db.prepare(
-    'UPDATE drafts SET current_pick = current_pick + 1, current_nomination = NULL, nomination_ends_at = NULL WHERE id = ?'
-  ).run(draftId);
-
   const remaining = db.prepare(
-    'SELECT COUNT(*) as c FROM players WHERE draft_id = ? AND drafted_by IS NULL'
+    'SELECT COUNT(*) as c FROM players WHERE draft_id = ? AND drafted_by IS NULL AND unsold = 0'
   ).get(draftId).c;
   if (remaining === 0) {
     db.prepare("UPDATE drafts SET status = 'completed' WHERE id = ?").run(draftId);
   }
 
   const state = getDraftState(draftId);
-  const winnerTeam = teams.find(t => t.id === winnerId);
-  const wonPlayer = db.prepare('SELECT * FROM players WHERE id = ?').get(draft.current_nomination);
-  io.to(`draft:${draftId}`).emit('auction-closed', {
-    player: { id: wonPlayer?.id, name: wonPlayer?.name },
-    team: { id: winnerId, name: winnerTeam?.name },
-    amount: winAmount
-  });
   io.to(`draft:${draftId}`).emit('draft-state', state);
 
   const updatedDraft = db.prepare('SELECT * FROM drafts WHERE id = ?').get(draftId);
