@@ -513,12 +513,20 @@ io.on('connection', (socket) => {
     if (!draftId) return;
     const draft = db.prepare('SELECT * FROM drafts WHERE id = ?').get(draftId);
     if (!draft || draft.commissioner_token !== commissionerToken) return;
+    if (!draft.current_nomination) return;
     clearPickTimer(draftId);
+    db.prepare('UPDATE players SET unsold = 1 WHERE id = ?').run(draft.current_nomination);
     db.prepare(
       'UPDATE drafts SET current_nomination = NULL, nomination_ends_at = NULL WHERE id = ?'
     ).run(draftId);
+    const remaining = db.prepare(
+      'SELECT COUNT(*) as c FROM players WHERE draft_id = ? AND drafted_by IS NULL AND unsold = 0'
+    ).get(draftId).c;
+    if (remaining === 0) {
+      db.prepare("UPDATE drafts SET status = 'completed' WHERE id = ?").run(draftId);
+    }
     const updatedDraft = db.prepare('SELECT * FROM drafts WHERE id = ?').get(draftId);
-    if (!updatedDraft.auction_paused) {
+    if (updatedDraft.status === 'active' && !updatedDraft.auction_paused) {
       autoNominateNext(draftId);
     } else {
       const state = getDraftState(draftId);
