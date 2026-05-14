@@ -808,6 +808,29 @@ document.getElementById('upload-csv-btn')?.addEventListener('click', async () =>
   }
 });
 
+// ── Mobile Tab Switching ──────────────────────────────────────────────────────
+const mobileTabBar = document.querySelector('.mobile-tab-bar');
+const mobileTabPanels = {
+  pool: document.querySelector('.player-pool'),
+  board: document.querySelector('.draft-board-container'),
+  team: document.querySelector('.my-team-panel'),
+};
+
+function setMobileTab(tab) {
+  mobileTabBar.querySelectorAll('.mobile-tab').forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.tab === tab);
+  });
+  Object.entries(mobileTabPanels).forEach(([key, el]) => {
+    el.classList.toggle('mobile-active', key === tab);
+  });
+}
+
+setMobileTab('pool');
+
+mobileTabBar.querySelectorAll('.mobile-tab').forEach(btn => {
+  btn.addEventListener('click', () => setMobileTab(btn.dataset.tab));
+});
+
 // ── Board view toggle ─────────────────────────────────────────────────────────
 document.getElementById('toggle-view-btn')?.addEventListener('click', () => {
   boardView = boardView === 'grid' ? 'list' : 'grid';
