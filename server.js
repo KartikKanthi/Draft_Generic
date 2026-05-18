@@ -19,25 +19,24 @@ app.use(express.static(join(__dirname, 'public')));
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-function getDraftState(draftId) {
-  const draft = db.prepare('SELECT * FROM drafts WHERE id = ?').get(draftId);
+async function getDraftState(draftId) {
+  const draft = await db.get('SELECT * FROM drafts WHERE id = $1', [draftId]);
   if (!draft) return null;
-  const teams = db.prepare('SELECT * FROM teams WHERE draft_id = ? ORDER BY pick_order').all(draftId);
-  const players = db.prepare(
-    'SELECT * FROM players WHERE draft_id = ? ORDER BY name COLLATE NOCASE'
-  ).all(draftId);
+  const teams = await db.all('SELECT * FROM teams WHERE draft_id = $1 ORDER BY pick_order', [draftId]);
+  const players = await db.all(
+    'SELECT * FROM players WHERE draft_id = $1 ORDER BY LOWER(name)', [draftId]
+  );
   const { commissioner_token, ...draftPublic } = draft;
 
-  // Include current bids for the active nomination
   let currentBids = [];
   if (draft.current_nomination) {
-    currentBids = db.prepare(`
+    currentBids = await db.all(`
       SELECT b.team_id, b.amount, t.name as team_name
       FROM bids b
       JOIN teams t ON b.team_id = t.id
-      WHERE b.draft_id = ? AND b.player_id = ?
+      WHERE b.draft_id = $1 AND b.player_id = $2
       ORDER BY b.amount DESC, b.created_at ASC
-    `).all(draftId, draft.current_nomination);
+    `, [draftId, draft.current_nomination]);
   }
 
   return {
@@ -59,50 +58,47 @@ function parseCsvBuffer(buffer) {
   return parse(buffer, { columns: true, skip_empty_lines: true, trim: true, bom: true });
 }
 
-function bulkInsertPlayers(draftId, records) {
-  const stmt = db.prepare(
-    'INSERT INTO players (id, draft_id, name, position, team_affiliation, metadata) VALUES (?, ?, ?, ?, ?, ?)'
-  );
+async function bulkInsertPlayers(draftId, records) {
   let count = 0;
-  db.transaction(() => {
+  await db.transaction(async (client) => {
+    let sortOrder = 0;
     for (const row of records) {
       const lc = Object.fromEntries(Object.entries(row).map(([k, v]) => [k.toLowerCase().trim(), v]));
       const name = lc.name || lc.player || lc['player name'] || lc['player_name'];
       if (!name?.trim()) continue;
       const { name: _a, player: _b, position, pos, team, team_affiliation, ...rest } = lc;
-      stmt.run(
-        randomUUID(), draftId, name.trim(),
-        position || pos || null,
-        team || team_affiliation || null,
-        Object.keys(rest).length ? JSON.stringify(rest) : null
+      await client.query(
+        'INSERT INTO players (id, draft_id, name, position, team_affiliation, metadata, sort_order) VALUES ($1, $2, $3, $4, $5, $6, $7)',
+        [randomUUID(), draftId, name.trim(), position || pos || null, team || team_affiliation || null,
+         Object.keys(rest).length ? JSON.stringify(rest) : null, sortOrder++]
       );
       count++;
     }
-  })();
+  });
   return count;
 }
 
 // ── Timer Management ──────────────────────────────────────────────────────────
 
-const activeTimers = new Map(); // draftId -> { interval, endsAt }
+const activeTimers = new Map();
 
-function startPickTimer(draftId, endsAtOverride = null) {
+async function startPickTimer(draftId, endsAtOverride = null) {
   clearPickTimer(draftId);
-  const draft = db.prepare('SELECT * FROM drafts WHERE id = ?').get(draftId);
+  const draft = await db.get('SELECT * FROM drafts WHERE id = $1', [draftId]);
   if (!draft || draft.status !== 'active' || draft.pick_timer === 0) return;
 
   const endsAt = endsAtOverride ?? Date.now() + draft.pick_timer * 1000;
 
-  const interval = setInterval(() => {
+  const interval = setInterval(async () => {
     const remaining = Math.max(0, endsAt - Date.now());
     io.to(`draft:${draftId}`).emit('timer-tick', { remaining });
 
     if (remaining === 0) {
       clearPickTimer(draftId);
-      const d = db.prepare('SELECT * FROM drafts WHERE id = ?').get(draftId);
+      const d = await db.get('SELECT * FROM drafts WHERE id = $1', [draftId]);
       if (d?.status === 'active') {
-        if (d.format === 'auction') closeAuction(draftId);
-        else autoPick(draftId);
+        if (d.format === 'auction') await closeAuction(draftId);
+        else await autoPick(draftId);
       }
     }
   }, 500);
@@ -115,47 +111,50 @@ function clearPickTimer(draftId) {
   if (entry) { clearInterval(entry.interval); activeTimers.delete(draftId); }
 }
 
-function autoPick(draftId) {
-  const player = db.prepare(
-    'SELECT id FROM players WHERE draft_id = ? AND drafted_by IS NULL ORDER BY rowid LIMIT 1'
-  ).get(draftId);
-  if (player) processPick(draftId, player.id, null, true);
+async function autoPick(draftId) {
+  const player = await db.get(
+    'SELECT id FROM players WHERE draft_id = $1 AND drafted_by IS NULL ORDER BY sort_order LIMIT 1',
+    [draftId]
+  );
+  if (player) await processPick(draftId, player.id, null, true);
 }
 
 // ── Pick Processing ───────────────────────────────────────────────────────────
 
-function processPick(draftId, playerId, teamToken, isAutoPick = false) {
-  const draft = db.prepare('SELECT * FROM drafts WHERE id = ?').get(draftId);
+async function processPick(draftId, playerId, teamToken, isAutoPick = false) {
+  const draft = await db.get('SELECT * FROM drafts WHERE id = $1', [draftId]);
   if (!draft || draft.status !== 'active') return false;
 
-  const teams = db.prepare('SELECT * FROM teams WHERE draft_id = ? ORDER BY pick_order').all(draftId);
+  const teams = await db.all('SELECT * FROM teams WHERE draft_id = $1 ORDER BY pick_order', [draftId]);
   const expectedIdx = getTeamIndexForPick(draft.current_pick, teams.length, draft.format);
   const pickingTeam = teams[expectedIdx];
 
   if (!isAutoPick && teamToken && pickingTeam?.token !== teamToken) return false;
 
-  const player = db.prepare(
-    'SELECT * FROM players WHERE id = ? AND draft_id = ? AND drafted_by IS NULL'
-  ).get(playerId, draftId);
+  const player = await db.get(
+    'SELECT * FROM players WHERE id = $1 AND draft_id = $2 AND drafted_by IS NULL',
+    [playerId, draftId]
+  );
   if (!player) return false;
 
-  db.prepare('UPDATE players SET drafted_by = ?, pick_number = ? WHERE id = ?')
-    .run(pickingTeam.id, draft.current_pick, playerId);
+  await db.run('UPDATE players SET drafted_by = $1, pick_number = $2 WHERE id = $3',
+    [pickingTeam.id, draft.current_pick, playerId]);
 
-  const remaining = db.prepare(
-    'SELECT COUNT(*) as c FROM players WHERE draft_id = ? AND drafted_by IS NULL'
-  ).get(draftId).c;
+  const countRow = await db.get(
+    'SELECT COUNT(*) as c FROM players WHERE draft_id = $1 AND drafted_by IS NULL', [draftId]
+  );
+  const remaining = parseInt(countRow.c);
   const nextPick = draft.current_pick + 1;
 
   if (remaining === 0) {
-    db.prepare("UPDATE drafts SET status = 'completed', current_pick = ? WHERE id = ?").run(nextPick, draftId);
+    await db.run("UPDATE drafts SET status = 'completed', current_pick = $1 WHERE id = $2", [nextPick, draftId]);
     clearPickTimer(draftId);
   } else {
-    db.prepare('UPDATE drafts SET current_pick = ? WHERE id = ?').run(nextPick, draftId);
-    if (draft.mode === 'live') startPickTimer(draftId);
+    await db.run('UPDATE drafts SET current_pick = $1 WHERE id = $2', [nextPick, draftId]);
+    if (draft.mode === 'live') await startPickTimer(draftId);
   }
 
-  const state = getDraftState(draftId);
+  const state = await getDraftState(draftId);
   io.to(`draft:${draftId}`).emit('draft-state', state);
   io.to(`draft:${draftId}`).emit('pick-made', {
     player: { id: player.id, name: player.name, position: player.position },
@@ -168,68 +167,71 @@ function processPick(draftId, playerId, teamToken, isAutoPick = false) {
 
 // ── Auction Logic ─────────────────────────────────────────────────────────────
 
-function autoNominateNext(draftId) {
-  const next = db.prepare(
-    'SELECT id FROM players WHERE draft_id = ? AND drafted_by IS NULL AND unsold = 0 ORDER BY rowid LIMIT 1'
-  ).get(draftId);
-  if (next) startNomination(draftId, next.id);
+async function autoNominateNext(draftId) {
+  const next = await db.get(
+    'SELECT id FROM players WHERE draft_id = $1 AND drafted_by IS NULL AND unsold = 0 ORDER BY sort_order LIMIT 1',
+    [draftId]
+  );
+  if (next) await startNomination(draftId, next.id);
 }
 
-function startNomination(draftId, playerId) {
-  const draft = db.prepare('SELECT * FROM drafts WHERE id = ?').get(draftId);
+async function startNomination(draftId, playerId) {
+  const draft = await db.get('SELECT * FROM drafts WHERE id = $1', [draftId]);
   if (!draft || draft.status !== 'active') return;
 
-  const player = db.prepare(
-    'SELECT * FROM players WHERE id = ? AND draft_id = ? AND drafted_by IS NULL'
-  ).get(playerId, draftId);
+  const player = await db.get(
+    'SELECT * FROM players WHERE id = $1 AND draft_id = $2 AND drafted_by IS NULL',
+    [playerId, draftId]
+  );
   if (!player) return;
 
   const endsAt = new Date(Date.now() + draft.pick_timer * 1000).toISOString();
-  db.prepare('UPDATE drafts SET current_nomination = ?, nomination_ends_at = ? WHERE id = ?')
-    .run(playerId, endsAt, draftId);
+  await db.run('UPDATE drafts SET current_nomination = $1, nomination_ends_at = $2 WHERE id = $3',
+    [playerId, endsAt, draftId]);
 
-  if (draft.mode === 'live' && !draft.auction_paused) startPickTimer(draftId);
+  if (draft.mode === 'live' && !draft.auction_paused) await startPickTimer(draftId);
 
-  const state = getDraftState(draftId);
+  const state = await getDraftState(draftId);
   io.to(`draft:${draftId}`).emit('draft-state', state);
 }
 
-function closeAuction(draftId) {
-  const draft = db.prepare('SELECT * FROM drafts WHERE id = ?').get(draftId);
+async function closeAuction(draftId) {
+  const draft = await db.get('SELECT * FROM drafts WHERE id = $1', [draftId]);
   if (!draft || !draft.current_nomination) return;
 
-  const topBid = db.prepare(`
+  const topBid = await db.get(`
     SELECT b.*, t.budget FROM bids b
     JOIN teams t ON b.team_id = t.id
-    WHERE b.draft_id = ? AND b.player_id = ?
+    WHERE b.draft_id = $1 AND b.player_id = $2
     ORDER BY b.amount DESC, b.created_at ASC LIMIT 1
-  `).get(draftId, draft.current_nomination);
+  `, [draftId, draft.current_nomination]);
 
-  const wonPlayer = db.prepare('SELECT * FROM players WHERE id = ?').get(draft.current_nomination);
+  const wonPlayer = await db.get('SELECT * FROM players WHERE id = $1', [draft.current_nomination]);
 
   if (!topBid) {
-    // No bids — mark unsold and move on
-    db.prepare('UPDATE players SET unsold = 1 WHERE id = ?').run(draft.current_nomination);
-    db.prepare(
-      'UPDATE drafts SET current_nomination = NULL, nomination_ends_at = NULL WHERE id = ?'
-    ).run(draftId);
+    await db.run('UPDATE players SET unsold = 1 WHERE id = $1', [draft.current_nomination]);
+    await db.run(
+      'UPDATE drafts SET current_nomination = NULL, nomination_ends_at = NULL WHERE id = $1',
+      [draftId]
+    );
     io.to(`draft:${draftId}`).emit('auction-closed', {
       player: { id: wonPlayer?.id, name: wonPlayer?.name },
       team: null,
       amount: null
     });
   } else {
-    const teams = db.prepare('SELECT * FROM teams WHERE draft_id = ? ORDER BY pick_order').all(draftId);
+    const teams = await db.all('SELECT * FROM teams WHERE draft_id = $1 ORDER BY pick_order', [draftId]);
     const winnerId = topBid.team_id;
-    const winAmount = topBid.amount;
+    const winAmount = parseInt(topBid.amount);
     const winnerTeam = teams.find(t => t.id === winnerId);
 
-    db.prepare('UPDATE players SET drafted_by = ?, pick_number = ?, bid_amount = ? WHERE id = ?')
-      .run(winnerId, draft.current_pick, winAmount, draft.current_nomination);
-    db.prepare('UPDATE teams SET budget = budget - ? WHERE id = ?').run(winAmount, winnerId);
-    db.prepare(
-      'UPDATE drafts SET current_pick = current_pick + 1, current_nomination = NULL, nomination_ends_at = NULL WHERE id = ?'
-    ).run(draftId);
+    await db.run('UPDATE players SET drafted_by = $1, pick_number = $2, bid_amount = $3 WHERE id = $4',
+      [winnerId, draft.current_pick, winAmount, draft.current_nomination]);
+    await db.run('UPDATE teams SET budget = budget - $1 WHERE id = $2', [winAmount, winnerId]);
+    await db.run(
+      'UPDATE drafts SET current_pick = current_pick + 1, current_nomination = NULL, nomination_ends_at = NULL WHERE id = $1',
+      [draftId]
+    );
 
     io.to(`draft:${draftId}`).emit('auction-closed', {
       player: { id: wonPlayer?.id, name: wonPlayer?.name },
@@ -238,25 +240,25 @@ function closeAuction(draftId) {
     });
   }
 
-  const remaining = db.prepare(
-    'SELECT COUNT(*) as c FROM players WHERE draft_id = ? AND drafted_by IS NULL AND unsold = 0'
-  ).get(draftId).c;
-  if (remaining === 0) {
-    db.prepare("UPDATE drafts SET status = 'completed' WHERE id = ?").run(draftId);
+  const countRow = await db.get(
+    'SELECT COUNT(*) as c FROM players WHERE draft_id = $1 AND drafted_by IS NULL AND unsold = 0', [draftId]
+  );
+  if (parseInt(countRow.c) === 0) {
+    await db.run("UPDATE drafts SET status = 'completed' WHERE id = $1", [draftId]);
   }
 
-  const state = getDraftState(draftId);
+  const state = await getDraftState(draftId);
   io.to(`draft:${draftId}`).emit('draft-state', state);
 
-  const updatedDraft = db.prepare('SELECT * FROM drafts WHERE id = ?').get(draftId);
+  const updatedDraft = await db.get('SELECT * FROM drafts WHERE id = $1', [draftId]);
   if (updatedDraft?.status === 'active' && !updatedDraft.auction_paused) {
-    autoNominateNext(draftId);
+    await autoNominateNext(draftId);
   }
 }
 
 // ── API Routes ────────────────────────────────────────────────────────────────
 
-app.post('/api/drafts', upload.single('players_csv'), (req, res) => {
+app.post('/api/drafts', upload.single('players_csv'), async (req, res) => {
   try {
     const { name, format, mode, num_teams, pick_timer, auction_budget, position_requirements } = req.body;
     if (!name?.trim() || !format || !mode || !num_teams)
@@ -272,15 +274,15 @@ app.post('/api/drafts', upload.single('players_csv'), (req, res) => {
     const budget = Math.max(1, parseInt(auction_budget) || 200);
     const posReqs = position_requirements || null;
 
-    db.prepare(`
+    await db.run(`
       INSERT INTO drafts (id, name, format, mode, num_teams, pick_timer, auction_budget, commissioner_token, position_requirements)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(draftId, name.trim(), format, mode, numTeams, timer, budget, commissionerToken, posReqs);
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+    `, [draftId, name.trim(), format, mode, numTeams, timer, budget, commissionerToken, posReqs]);
 
     let playerCount = 0;
     if (req.file) {
       const records = parseCsvBuffer(req.file.buffer);
-      playerCount = bulkInsertPlayers(draftId, records);
+      playerCount = await bulkInsertPlayers(draftId, records);
     }
 
     res.json({ draft_id: draftId, commissioner_token: commissionerToken, player_count: playerCount });
@@ -290,8 +292,8 @@ app.post('/api/drafts', upload.single('players_csv'), (req, res) => {
   }
 });
 
-app.post('/api/drafts/:id/players', upload.single('players_csv'), (req, res) => {
-  const draft = db.prepare('SELECT * FROM drafts WHERE id = ?').get(req.params.id);
+app.post('/api/drafts/:id/players', upload.single('players_csv'), async (req, res) => {
+  const draft = await db.get('SELECT * FROM drafts WHERE id = $1', [req.params.id]);
   if (!draft) return res.status(404).json({ error: 'Draft not found' });
   if (draft.commissioner_token !== req.headers['x-commissioner-token'])
     return res.status(403).json({ error: 'Unauthorized' });
@@ -300,10 +302,10 @@ app.post('/api/drafts/:id/players', upload.single('players_csv'), (req, res) => 
   if (!req.file) return res.status(400).json({ error: 'No file provided' });
 
   try {
-    db.prepare('DELETE FROM players WHERE draft_id = ?').run(req.params.id);
+    await db.run('DELETE FROM players WHERE draft_id = $1', [req.params.id]);
     const records = parseCsvBuffer(req.file.buffer);
-    const count = bulkInsertPlayers(req.params.id, records);
-    const state = getDraftState(req.params.id);
+    const count = await bulkInsertPlayers(req.params.id, records);
+    const state = await getDraftState(req.params.id);
     io.to(`draft:${req.params.id}`).emit('draft-state', state);
     res.json({ player_count: count });
   } catch (err) {
@@ -311,56 +313,58 @@ app.post('/api/drafts/:id/players', upload.single('players_csv'), (req, res) => 
   }
 });
 
-app.get('/api/drafts/:id', (req, res) => {
-  const state = getDraftState(req.params.id);
+app.get('/api/drafts/:id', async (req, res) => {
+  const state = await getDraftState(req.params.id);
   if (!state) return res.status(404).json({ error: 'Draft not found' });
   res.json(state);
 });
 
-app.post('/api/drafts/:id/team-by-token', (req, res) => {
+app.post('/api/drafts/:id/team-by-token', async (req, res) => {
   const { token } = req.body;
   if (!token) return res.status(400).json({ error: 'token required' });
-  const team = db.prepare('SELECT id FROM teams WHERE draft_id = ? AND token = ?').get(req.params.id, token);
+  const team = await db.get('SELECT id FROM teams WHERE draft_id = $1 AND token = $2', [req.params.id, token]);
   if (!team) return res.status(404).json({ error: 'Team not found' });
   res.json({ team_id: team.id });
 });
 
-app.delete('/api/drafts/:id', (req, res) => {
-  const draft = db.prepare('SELECT * FROM drafts WHERE id = ?').get(req.params.id);
+app.delete('/api/drafts/:id', async (req, res) => {
+  const draft = await db.get('SELECT * FROM drafts WHERE id = $1', [req.params.id]);
   if (!draft) return res.status(404).json({ error: 'Draft not found' });
   if (draft.commissioner_token !== req.headers['x-commissioner-token'])
     return res.status(403).json({ error: 'Unauthorized' });
 
-  db.transaction(() => {
-    db.prepare('DELETE FROM bids WHERE draft_id = ?').run(req.params.id);
-    db.prepare('DELETE FROM players WHERE draft_id = ?').run(req.params.id);
-    db.prepare('DELETE FROM teams WHERE draft_id = ?').run(req.params.id);
-    db.prepare('DELETE FROM drafts WHERE id = ?').run(req.params.id);
-  })();
+  await db.transaction(async (client) => {
+    await client.query('DELETE FROM bids WHERE draft_id = $1', [req.params.id]);
+    await client.query('DELETE FROM players WHERE draft_id = $1', [req.params.id]);
+    await client.query('DELETE FROM teams WHERE draft_id = $1', [req.params.id]);
+    await client.query('DELETE FROM drafts WHERE id = $1', [req.params.id]);
+  });
 
   clearPickTimer(req.params.id);
   io.to(`draft:${req.params.id}`).emit('draft-deleted', {});
   res.json({ success: true });
 });
 
-app.post('/api/drafts/:id/join', (req, res) => {
+app.post('/api/drafts/:id/join', async (req, res) => {
   const { team_name } = req.body;
   if (!team_name?.trim()) return res.status(400).json({ error: 'team_name required' });
 
-  const draft = db.prepare('SELECT * FROM drafts WHERE id = ?').get(req.params.id);
+  const draft = await db.get('SELECT * FROM drafts WHERE id = $1', [req.params.id]);
   if (!draft) return res.status(404).json({ error: 'Draft not found' });
   if (draft.status !== 'waiting') return res.status(400).json({ error: 'Draft already started' });
 
-  const teamCount = db.prepare('SELECT COUNT(*) as c FROM teams WHERE draft_id = ?').get(req.params.id).c;
+  const countRow = await db.get('SELECT COUNT(*) as c FROM teams WHERE draft_id = $1', [req.params.id]);
+  const teamCount = parseInt(countRow.c);
   if (teamCount >= draft.num_teams) return res.status(400).json({ error: 'Draft is full' });
 
   const teamId = randomUUID();
   const token = randomUUID();
-  db.prepare(
-    'INSERT INTO teams (id, draft_id, name, token, pick_order, budget) VALUES (?, ?, ?, ?, ?, ?)'
-  ).run(teamId, req.params.id, team_name.trim(), token, teamCount, draft.auction_budget);
+  await db.run(
+    'INSERT INTO teams (id, draft_id, name, token, pick_order, budget) VALUES ($1, $2, $3, $4, $5, $6)',
+    [teamId, req.params.id, team_name.trim(), token, teamCount, draft.auction_budget]
+  );
 
-  const state = getDraftState(req.params.id);
+  const state = await getDraftState(req.params.id);
   io.to(`draft:${req.params.id}`).emit('draft-state', state);
 
   res.json({ team_id: teamId, token, pick_order: teamCount });
@@ -370,93 +374,96 @@ app.post('/api/drafts/:id/join', (req, res) => {
 
 io.on('connection', (socket) => {
 
-  socket.on('join-draft', ({ draftId, commissionerToken, teamToken }) => {
+  socket.on('join-draft', async ({ draftId, commissionerToken, teamToken }) => {
     socket.join(`draft:${draftId}`);
     socket.data.draftId = draftId;
 
-    const draft = db.prepare('SELECT * FROM drafts WHERE id = ?').get(draftId);
+    const draft = await db.get('SELECT * FROM drafts WHERE id = $1', [draftId]);
     if (!draft) { socket.emit('error', { message: 'Draft not found' }); return; }
 
     socket.data.isCommissioner = draft.commissioner_token === commissionerToken;
 
     if (teamToken) {
-      const team = db.prepare('SELECT * FROM teams WHERE draft_id = ? AND token = ?').get(draftId, teamToken);
+      const team = await db.get('SELECT * FROM teams WHERE draft_id = $1 AND token = $2', [draftId, teamToken]);
       if (team) { socket.data.teamId = team.id; socket.data.teamToken = teamToken; }
     }
 
     socket.emit('init', {
-      state: getDraftState(draftId),
+      state: await getDraftState(draftId),
       isCommissioner: socket.data.isCommissioner,
       teamId: socket.data.teamId || null
     });
   });
 
-  socket.on('start-draft', ({ commissionerToken }) => {
+  socket.on('start-draft', async ({ commissionerToken }) => {
     const { draftId } = socket.data;
     if (!draftId) return;
 
-    const draft = db.prepare('SELECT * FROM drafts WHERE id = ?').get(draftId);
+    const draft = await db.get('SELECT * FROM drafts WHERE id = $1', [draftId]);
     if (!draft || draft.commissioner_token !== commissionerToken || draft.status !== 'waiting') return;
 
-    const teams = db.prepare('SELECT * FROM teams WHERE draft_id = ? ORDER BY RANDOM()').all(draftId);
+    const teams = await db.all('SELECT * FROM teams WHERE draft_id = $1 ORDER BY RANDOM()', [draftId]);
     if (teams.length < 2) { socket.emit('error', { message: 'Need at least 2 teams to start' }); return; }
 
-    const playerCount = db.prepare('SELECT COUNT(*) as c FROM players WHERE draft_id = ?').get(draftId).c;
-    if (playerCount === 0) { socket.emit('error', { message: 'Upload a player pool before starting' }); return; }
+    const countRow = await db.get('SELECT COUNT(*) as c FROM players WHERE draft_id = $1', [draftId]);
+    if (parseInt(countRow.c) === 0) { socket.emit('error', { message: 'Upload a player pool before starting' }); return; }
 
-    const updateOrder = db.prepare('UPDATE teams SET pick_order = ? WHERE id = ?');
-    db.transaction(() => teams.forEach((t, i) => updateOrder.run(i, t.id)))();
-    db.prepare('UPDATE drafts SET status = ?, num_teams = ? WHERE id = ?')
-      .run('active', teams.length, draftId);
+    await db.transaction(async (client) => {
+      for (let i = 0; i < teams.length; i++) {
+        await client.query('UPDATE teams SET pick_order = $1 WHERE id = $2', [i, teams[i].id]);
+      }
+    });
+    await db.run('UPDATE drafts SET status = $1, num_teams = $2 WHERE id = $3',
+      ['active', teams.length, draftId]);
 
-    const state = getDraftState(draftId);
+    const state = await getDraftState(draftId);
     io.to(`draft:${draftId}`).emit('draft-state', state);
     io.to(`draft:${draftId}`).emit('draft-started', {});
 
-    if (draft.format !== 'auction' && draft.mode === 'live') startPickTimer(draftId);
-    else if (draft.format === 'auction') autoNominateNext(draftId);
+    if (draft.format !== 'auction' && draft.mode === 'live') await startPickTimer(draftId);
+    else if (draft.format === 'auction') await autoNominateNext(draftId);
   });
 
-  socket.on('make-pick', ({ teamToken, playerId }) => {
+  socket.on('make-pick', async ({ teamToken, playerId }) => {
     const { draftId } = socket.data;
     if (!draftId) return;
 
-    const draft = db.prepare('SELECT * FROM drafts WHERE id = ?').get(draftId);
+    const draft = await db.get('SELECT * FROM drafts WHERE id = $1', [draftId]);
     if (!draft || draft.status !== 'active' || draft.format === 'auction') return;
 
-    const team = db.prepare('SELECT * FROM teams WHERE draft_id = ? AND token = ?').get(draftId, teamToken);
+    const team = await db.get('SELECT * FROM teams WHERE draft_id = $1 AND token = $2', [draftId, teamToken]);
     if (!team) return;
 
-    const teams = db.prepare('SELECT * FROM teams WHERE draft_id = ? ORDER BY pick_order').all(draftId);
+    const teams = await db.all('SELECT * FROM teams WHERE draft_id = $1 ORDER BY pick_order', [draftId]);
     const expectedIdx = getTeamIndexForPick(draft.current_pick, teams.length, draft.format);
     if (teams[expectedIdx]?.id !== team.id) {
       socket.emit('error', { message: "It's not your turn" });
       return;
     }
 
-    processPick(draftId, playerId, teamToken, false);
+    await processPick(draftId, playerId, teamToken, false);
   });
 
-  socket.on('nominate-player', ({ commissionerToken, playerId }) => {
+  socket.on('nominate-player', async ({ commissionerToken, playerId }) => {
     const { draftId } = socket.data;
     if (!draftId) return;
 
-    const draft = db.prepare('SELECT * FROM drafts WHERE id = ?').get(draftId);
+    const draft = await db.get('SELECT * FROM drafts WHERE id = $1', [draftId]);
     if (!draft || draft.commissioner_token !== commissionerToken) return;
     if (draft.format !== 'auction' || draft.status !== 'active') return;
     if (draft.current_nomination) { socket.emit('error', { message: 'Nomination already active' }); return; }
 
-    startNomination(draftId, playerId);
+    await startNomination(draftId, playerId);
   });
 
-  socket.on('place-bid', ({ teamToken, amount }) => {
+  socket.on('place-bid', async ({ teamToken, amount }) => {
     const { draftId } = socket.data;
     if (!draftId) return;
 
-    const draft = db.prepare('SELECT * FROM drafts WHERE id = ?').get(draftId);
+    const draft = await db.get('SELECT * FROM drafts WHERE id = $1', [draftId]);
     if (!draft || draft.format !== 'auction' || draft.status !== 'active' || !draft.current_nomination) return;
 
-    const team = db.prepare('SELECT * FROM teams WHERE draft_id = ? AND token = ?').get(draftId, teamToken);
+    const team = await db.get('SELECT * FROM teams WHERE draft_id = $1 AND token = $2', [draftId, teamToken]);
     if (!team) return;
 
     const bid = parseInt(amount);
@@ -465,32 +472,31 @@ io.on('connection', (socket) => {
       return;
     }
 
-    // Must beat the current highest bid
-    const topBid = db.prepare(`
-      SELECT MAX(amount) as top FROM bids WHERE draft_id = ? AND player_id = ?
-    `).get(draftId, draft.current_nomination);
-    const currentTop = topBid?.top || 0;
+    const topRow = await db.get(
+      'SELECT MAX(amount) as top FROM bids WHERE draft_id = $1 AND player_id = $2',
+      [draftId, draft.current_nomination]
+    );
+    const currentTop = parseInt(topRow?.top) || 0;
     if (bid <= currentTop) {
       socket.emit('error', { message: `Bid must be higher than current top bid of $${currentTop}` });
       return;
     }
 
-    db.prepare(`
+    await db.run(`
       INSERT INTO bids (id, draft_id, player_id, team_id, amount)
-      VALUES (?, ?, ?, ?, ?)
-      ON CONFLICT(draft_id, player_id, team_id) DO UPDATE SET amount = excluded.amount, created_at = datetime('now')
-    `).run(randomUUID(), draftId, draft.current_nomination, team.id, bid);
+      VALUES ($1, $2, $3, $4, $5)
+      ON CONFLICT(draft_id, player_id, team_id) DO UPDATE SET amount = EXCLUDED.amount, created_at = NOW()
+    `, [randomUUID(), draftId, draft.current_nomination, team.id, bid]);
 
-    // Extend timer on bid: reset to max(20s, remaining)
     const BID_EXTENSION_MS = 20 * 1000;
     const currentTimer = activeTimers.get(draftId);
     if (currentTimer && draft.mode === 'live') {
       const remaining = currentTimer.endsAt - Date.now();
       if (remaining < BID_EXTENSION_MS) {
         const newEndsAt = Date.now() + BID_EXTENSION_MS;
-        db.prepare('UPDATE drafts SET nomination_ends_at = ? WHERE id = ?')
-          .run(new Date(newEndsAt).toISOString(), draftId);
-        startPickTimer(draftId, newEndsAt);
+        await db.run('UPDATE drafts SET nomination_ends_at = $1 WHERE id = $2',
+          [new Date(newEndsAt).toISOString(), draftId]);
+        await startPickTimer(draftId, newEndsAt);
       }
     }
 
@@ -499,45 +505,46 @@ io.on('connection', (socket) => {
     });
   });
 
-  socket.on('close-auction', ({ commissionerToken }) => {
+  socket.on('close-auction', async ({ commissionerToken }) => {
     const { draftId } = socket.data;
     if (!draftId) return;
-    const draft = db.prepare('SELECT * FROM drafts WHERE id = ?').get(draftId);
+    const draft = await db.get('SELECT * FROM drafts WHERE id = $1', [draftId]);
     if (!draft || draft.commissioner_token !== commissionerToken) return;
     clearPickTimer(draftId);
-    closeAuction(draftId);
+    await closeAuction(draftId);
   });
 
-  socket.on('skip-nomination', ({ commissionerToken }) => {
+  socket.on('skip-nomination', async ({ commissionerToken }) => {
     const { draftId } = socket.data;
     if (!draftId) return;
-    const draft = db.prepare('SELECT * FROM drafts WHERE id = ?').get(draftId);
+    const draft = await db.get('SELECT * FROM drafts WHERE id = $1', [draftId]);
     if (!draft || draft.commissioner_token !== commissionerToken) return;
     if (!draft.current_nomination) return;
     clearPickTimer(draftId);
-    db.prepare('UPDATE players SET unsold = 1 WHERE id = ?').run(draft.current_nomination);
-    db.prepare(
-      'UPDATE drafts SET current_nomination = NULL, nomination_ends_at = NULL WHERE id = ?'
-    ).run(draftId);
-    const remaining = db.prepare(
-      'SELECT COUNT(*) as c FROM players WHERE draft_id = ? AND drafted_by IS NULL AND unsold = 0'
-    ).get(draftId).c;
-    if (remaining === 0) {
-      db.prepare("UPDATE drafts SET status = 'completed' WHERE id = ?").run(draftId);
+    await db.run('UPDATE players SET unsold = 1 WHERE id = $1', [draft.current_nomination]);
+    await db.run(
+      'UPDATE drafts SET current_nomination = NULL, nomination_ends_at = NULL WHERE id = $1',
+      [draftId]
+    );
+    const countRow = await db.get(
+      'SELECT COUNT(*) as c FROM players WHERE draft_id = $1 AND drafted_by IS NULL AND unsold = 0', [draftId]
+    );
+    if (parseInt(countRow.c) === 0) {
+      await db.run("UPDATE drafts SET status = 'completed' WHERE id = $1", [draftId]);
     }
-    const updatedDraft = db.prepare('SELECT * FROM drafts WHERE id = ?').get(draftId);
+    const updatedDraft = await db.get('SELECT * FROM drafts WHERE id = $1', [draftId]);
     if (updatedDraft.status === 'active' && !updatedDraft.auction_paused) {
-      autoNominateNext(draftId);
+      await autoNominateNext(draftId);
     } else {
-      const state = getDraftState(draftId);
+      const state = await getDraftState(draftId);
       io.to(`draft:${draftId}`).emit('draft-state', state);
     }
   });
 
-  socket.on('pause-auction', ({ commissionerToken }) => {
+  socket.on('pause-auction', async ({ commissionerToken }) => {
     const { draftId } = socket.data;
     if (!draftId) return;
-    const draft = db.prepare('SELECT * FROM drafts WHERE id = ?').get(draftId);
+    const draft = await db.get('SELECT * FROM drafts WHERE id = $1', [draftId]);
     if (!draft || draft.commissioner_token !== commissionerToken) return;
     if (draft.format !== 'auction' || draft.status !== 'active' || draft.auction_paused) return;
 
@@ -545,57 +552,56 @@ io.on('connection', (socket) => {
     const remaining = currentTimer ? Math.max(0, currentTimer.endsAt - Date.now()) : null;
     clearPickTimer(draftId);
 
-    db.prepare('UPDATE drafts SET auction_paused = 1, nomination_paused_remaining_ms = ? WHERE id = ?')
-      .run(remaining, draftId);
+    await db.run('UPDATE drafts SET auction_paused = 1, nomination_paused_remaining_ms = $1 WHERE id = $2',
+      [remaining, draftId]);
 
-    const state = getDraftState(draftId);
+    const state = await getDraftState(draftId);
     io.to(`draft:${draftId}`).emit('draft-state', state);
   });
 
-  socket.on('resume-auction', ({ commissionerToken }) => {
+  socket.on('resume-auction', async ({ commissionerToken }) => {
     const { draftId } = socket.data;
     if (!draftId) return;
-    const draft = db.prepare('SELECT * FROM drafts WHERE id = ?').get(draftId);
+    const draft = await db.get('SELECT * FROM drafts WHERE id = $1', [draftId]);
     if (!draft || draft.commissioner_token !== commissionerToken) return;
     if (draft.format !== 'auction' || draft.status !== 'active' || !draft.auction_paused) return;
 
-    db.prepare('UPDATE drafts SET auction_paused = 0, nomination_paused_remaining_ms = NULL WHERE id = ?')
-      .run(draftId);
+    await db.run('UPDATE drafts SET auction_paused = 0, nomination_paused_remaining_ms = NULL WHERE id = $1',
+      [draftId]);
 
     if (draft.current_nomination) {
       if (draft.mode === 'live' && draft.nomination_paused_remaining_ms > 0) {
         const newEndsAt = Date.now() + draft.nomination_paused_remaining_ms;
-        db.prepare('UPDATE drafts SET nomination_ends_at = ? WHERE id = ?')
-          .run(new Date(newEndsAt).toISOString(), draftId);
-        startPickTimer(draftId, newEndsAt);
+        await db.run('UPDATE drafts SET nomination_ends_at = $1 WHERE id = $2',
+          [new Date(newEndsAt).toISOString(), draftId]);
+        await startPickTimer(draftId, newEndsAt);
       }
-      const state = getDraftState(draftId);
+      const state = await getDraftState(draftId);
       io.to(`draft:${draftId}`).emit('draft-state', state);
     } else {
-      autoNominateNext(draftId);
+      await autoNominateNext(draftId);
     }
   });
 
-  socket.on('complete-draft', ({ commissionerToken }) => {
+  socket.on('complete-draft', async ({ commissionerToken }) => {
     const { draftId } = socket.data;
     if (!draftId) return;
-    const draft = db.prepare('SELECT * FROM drafts WHERE id = ?').get(draftId);
+    const draft = await db.get('SELECT * FROM drafts WHERE id = $1', [draftId]);
     if (!draft || draft.commissioner_token !== commissionerToken) return;
     clearPickTimer(draftId);
-    db.prepare("UPDATE drafts SET status = 'completed' WHERE id = ?").run(draftId);
-    const state = getDraftState(draftId);
+    await db.run("UPDATE drafts SET status = 'completed' WHERE id = $1", [draftId]);
+    const state = await getDraftState(draftId);
     io.to(`draft:${draftId}`).emit('draft-state', state);
   });
 });
 
 // ── Startup ───────────────────────────────────────────────────────────────────
 
-// Restore timers for active live drafts surviving a server restart
-const activeDrafts = db.prepare(
+const activeDrafts = await db.all(
   "SELECT * FROM drafts WHERE status = 'active' AND mode = 'live' AND pick_timer > 0"
-).all();
+);
 for (const draft of activeDrafts) {
-  if (draft.format !== 'auction') startPickTimer(draft.id);
+  if (draft.format !== 'auction') await startPickTimer(draft.id);
 }
 
 const PORT = process.env.PORT || 3000;

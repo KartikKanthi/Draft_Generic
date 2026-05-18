@@ -1,17 +1,13 @@
-import { DatabaseSync } from 'node:sqlite';
-import { join, dirname } from 'path';
-import { fileURLToPath } from 'url';
-import { mkdirSync } from 'fs';
+import pg from 'pg';
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const dbPath = process.env.DB_PATH || join(__dirname, 'draft.db');
-mkdirSync(dirname(dbPath), { recursive: true });
-const _db = new DatabaseSync(dbPath);
+const { Pool } = pg;
 
-_db.exec('PRAGMA journal_mode = WAL');
-_db.exec('PRAGMA foreign_keys = ON');
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false
+});
 
-_db.exec(`
+await pool.query(`
   CREATE TABLE IF NOT EXISTS drafts (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL,
@@ -25,9 +21,14 @@ _db.exec(`
     current_nomination TEXT,
     nomination_ends_at TEXT,
     commissioner_token TEXT NOT NULL,
-    created_at TEXT DEFAULT (datetime('now'))
-  );
+    position_requirements TEXT,
+    auction_paused INTEGER NOT NULL DEFAULT 0,
+    nomination_paused_remaining_ms INTEGER,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+  )
+`);
 
+await pool.query(`
   CREATE TABLE IF NOT EXISTS teams (
     id TEXT PRIMARY KEY,
     draft_id TEXT NOT NULL REFERENCES drafts(id),
@@ -35,8 +36,10 @@ _db.exec(`
     token TEXT NOT NULL UNIQUE,
     pick_order INTEGER NOT NULL,
     budget INTEGER NOT NULL DEFAULT 200
-  );
+  )
+`);
 
+await pool.query(`
   CREATE TABLE IF NOT EXISTS players (
     id TEXT PRIMARY KEY,
     draft_id TEXT NOT NULL REFERENCES drafts(id),
@@ -46,42 +49,59 @@ _db.exec(`
     metadata TEXT,
     drafted_by TEXT REFERENCES teams(id),
     pick_number INTEGER,
-    bid_amount INTEGER
-  );
+    bid_amount INTEGER,
+    unsold INTEGER NOT NULL DEFAULT 0,
+    sort_order INTEGER NOT NULL DEFAULT 0
+  )
+`);
 
+await pool.query(`
   CREATE TABLE IF NOT EXISTS bids (
     id TEXT PRIMARY KEY,
     draft_id TEXT NOT NULL,
     player_id TEXT NOT NULL,
     team_id TEXT NOT NULL,
     amount INTEGER NOT NULL,
-    created_at TEXT DEFAULT (datetime('now')),
+    created_at TIMESTAMPTZ DEFAULT NOW(),
     UNIQUE(draft_id, player_id, team_id)
-  );
+  )
 `);
 
-// Migrate: add position_requirements column if it doesn't exist yet
-try { _db.exec('ALTER TABLE drafts ADD COLUMN position_requirements TEXT'); } catch {}
-try { _db.exec('ALTER TABLE drafts ADD COLUMN auction_paused INTEGER NOT NULL DEFAULT 0'); } catch {}
-try { _db.exec('ALTER TABLE drafts ADD COLUMN nomination_paused_remaining_ms INTEGER'); } catch {}
-try { _db.exec('ALTER TABLE players ADD COLUMN unsold INTEGER NOT NULL DEFAULT 0'); } catch {}
+// Safe migrations for existing databases
+for (const sql of [
+  'ALTER TABLE drafts ADD COLUMN IF NOT EXISTS position_requirements TEXT',
+  'ALTER TABLE drafts ADD COLUMN IF NOT EXISTS auction_paused INTEGER NOT NULL DEFAULT 0',
+  'ALTER TABLE drafts ADD COLUMN IF NOT EXISTS nomination_paused_remaining_ms INTEGER',
+  'ALTER TABLE players ADD COLUMN IF NOT EXISTS unsold INTEGER NOT NULL DEFAULT 0',
+  'ALTER TABLE players ADD COLUMN IF NOT EXISTS sort_order INTEGER NOT NULL DEFAULT 0',
+]) {
+  await pool.query(sql);
+}
 
-// Wrap node:sqlite to provide a better-sqlite3-compatible API surface
-const db = {
-  prepare: (sql) => _db.prepare(sql),
-  exec: (sql) => _db.exec(sql),
-  // Returns a function that, when called, wraps fn in a transaction
-  transaction: (fn) => (...args) => {
-    _db.exec('BEGIN IMMEDIATE');
+export default {
+  get: async (sql, params = []) => {
+    const result = await pool.query(sql, params);
+    return result.rows[0] ?? null;
+  },
+  all: async (sql, params = []) => {
+    const result = await pool.query(sql, params);
+    return result.rows;
+  },
+  run: async (sql, params = []) => {
+    await pool.query(sql, params);
+  },
+  transaction: async (fn) => {
+    const client = await pool.connect();
     try {
-      const result = fn(...args);
-      _db.exec('COMMIT');
+      await client.query('BEGIN');
+      const result = await fn(client);
+      await client.query('COMMIT');
       return result;
     } catch (e) {
-      try { _db.exec('ROLLBACK'); } catch {}
+      await client.query('ROLLBACK');
       throw e;
+    } finally {
+      client.release();
     }
   }
 };
-
-export default db;
