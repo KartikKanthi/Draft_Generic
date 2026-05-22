@@ -91,6 +91,10 @@ select option { background: var(--surface2); }
 .badge-waiting { background: var(--surface3); color: var(--text-muted); }
 .badge-active { background: #1f3d28; color: var(--success); }
 .badge-completed { background: var(--surface3); color: var(--text-muted); }
+.badge-blue { background: #1f4068; color: var(--primary); }
+.badge-muted { background: var(--surface3); color: var(--text-muted); }
+.badge-warning { background: #3d2f10; color: var(--warning); }
+.badge-success { background: #1f3d28; color: var(--success); }
 
 /* ── HOME PAGE ───────────────────────────────────────────────────────────────── */
 .home-container {
@@ -718,3 +722,94 @@ body.draft-page {
   .completed-content h2 { font-size: 20px; margin-bottom: 16px; }
   .rosters-grid { grid-template-columns: 1fr; }
 }
+
+/* ── LEAGUE PAGES ─────────────────────────────────────────────────────────────── */
+
+.league-section {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 20px;
+  margin-bottom: 16px;
+}
+
+.info-box {
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 10px 14px;
+  font-size: 14px;
+}
+
+.rule-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-height: 20px;
+}
+
+.rule-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+}
+
+.rule-key {
+  background: var(--surface3);
+  color: var(--text-muted);
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-family: monospace;
+  white-space: nowrap;
+}
+
+/* League standings table */
+.league-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 14px;
+}
+
+.league-table th {
+  text-align: left;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text-muted);
+  font-weight: 600;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.league-table td {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+  vertical-align: middle;
+}
+
+.league-table tbody tr:hover { background: var(--surface2); }
+
+.pts-col { text-align: right; white-space: nowrap; }
+.total-pts { color: var(--primary); font-weight: 700; font-size: 15px; }
+.rank-cell { color: var(--text-muted); font-size: 13px; text-align: center; }
+
+/* Round cards */
+.round-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 16px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  margin-bottom: 8px;
+  gap: 12px;
+}
+
+.round-card:hover { border-color: var(--primary); }
+

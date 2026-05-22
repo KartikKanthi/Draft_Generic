@@ -67,6 +67,45 @@ await pool.query(`
   )
 `);
 
+await pool.query(`
+  CREATE TABLE IF NOT EXISTS leagues (
+    id TEXT PRIMARY KEY,
+    draft_id TEXT NOT NULL REFERENCES drafts(id),
+    name TEXT NOT NULL,
+    sport TEXT,
+    scoring_rules JSONB NOT NULL DEFAULT '{}',
+    squad_size INTEGER NOT NULL DEFAULT 15,
+    starting_size INTEGER NOT NULL DEFAULT 11,
+    status TEXT NOT NULL DEFAULT 'active',
+    created_at TIMESTAMPTZ DEFAULT NOW()
+  )
+`);
+
+await pool.query(`
+  CREATE TABLE IF NOT EXISTS rounds (
+    id TEXT PRIMARY KEY,
+    league_id TEXT NOT NULL REFERENCES leagues(id),
+    round_number INTEGER NOT NULL,
+    name TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'upcoming',
+    lineup_deadline TIMESTAMPTZ,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+  )
+`);
+
+await pool.query(`
+  CREATE TABLE IF NOT EXISTS stat_entries (
+    id TEXT PRIMARY KEY,
+    league_id TEXT NOT NULL REFERENCES leagues(id),
+    round_id TEXT NOT NULL REFERENCES rounds(id),
+    player_id TEXT NOT NULL REFERENCES players(id),
+    stats JSONB NOT NULL DEFAULT '{}',
+    points REAL NOT NULL DEFAULT 0,
+    points_breakdown JSONB NOT NULL DEFAULT '{}',
+    UNIQUE(round_id, player_id)
+  )
+`);
+
 // Safe migrations for existing databases
 for (const sql of [
   'ALTER TABLE drafts ADD COLUMN IF NOT EXISTS position_requirements TEXT',

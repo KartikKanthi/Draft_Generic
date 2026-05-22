@@ -7,6 +7,7 @@ import multer from 'multer';
 import { parse } from 'csv-parse/sync';
 import { randomUUID } from 'crypto';
 import db from './db.js';
+import { calculatePoints, SCORING_PRESETS } from './points.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -368,6 +369,237 @@ app.post('/api/drafts/:id/join', async (req, res) => {
   io.to(`draft:${req.params.id}`).emit('draft-state', state);
 
   res.json({ team_id: teamId, token, pick_order: teamCount });
+});
+
+// ── League Helpers ────────────────────────────────────────────────────────────
+
+async function getLeagueWithAuth(leagueId, commissionerToken) {
+  const league = await db.get(`
+    SELECT l.*, d.commissioner_token FROM leagues l
+    JOIN drafts d ON l.draft_id = d.id WHERE l.id = $1
+  `, [leagueId]);
+  if (!league) return { error: 'League not found', status: 404 };
+  if (commissionerToken && league.commissioner_token !== commissionerToken)
+    return { error: 'Unauthorized', status: 403 };
+  return { league };
+}
+
+async function computeStandings(leagueId, teams, rounds) {
+  const allEntries = await db.all(`
+    SELECT se.player_id, se.round_id, se.points, p.drafted_by
+    FROM stat_entries se JOIN players p ON se.player_id = p.id
+    WHERE se.league_id = $1
+  `, [leagueId]);
+
+  return teams.map(team => {
+    const teamEntries = allEntries.filter(e => e.drafted_by === team.id);
+    const roundPoints = rounds.map(r => {
+      const pts = teamEntries.filter(e => e.round_id === r.id)
+        .reduce((s, e) => s + e.points, 0);
+      return { round_id: r.id, round_name: r.name, round_number: r.round_number, points: Math.round(pts * 10) / 10 };
+    });
+    const total = Math.round(roundPoints.reduce((s, r) => s + r.points, 0) * 10) / 10;
+    return { team_id: team.id, team_name: team.name, total_points: total, rounds: roundPoints };
+  }).sort((a, b) => b.total_points - a.total_points);
+}
+
+// ── League Routes ─────────────────────────────────────────────────────────────
+
+app.get('/api/scoring-presets', (_req, res) => res.json(SCORING_PRESETS));
+
+app.post('/api/leagues', async (req, res) => {
+  try {
+    const { draft_id, name, sport, scoring_rules, squad_size, starting_size } = req.body;
+    const commToken = req.headers['x-commissioner-token'];
+    if (!draft_id || !name?.trim()) return res.status(400).json({ error: 'draft_id and name required' });
+
+    const draft = await db.get('SELECT * FROM drafts WHERE id = $1', [draft_id]);
+    if (!draft) return res.status(404).json({ error: 'Draft not found' });
+    if (draft.commissioner_token !== commToken) return res.status(403).json({ error: 'Unauthorized' });
+    if (draft.status !== 'completed') return res.status(400).json({ error: 'Draft must be completed first' });
+
+    const existing = await db.get('SELECT id FROM leagues WHERE draft_id = $1', [draft_id]);
+    if (existing) return res.json({ league_id: existing.id, already_exists: true });
+
+    const leagueId = randomUUID();
+    await db.run(`
+      INSERT INTO leagues (id, draft_id, name, sport, scoring_rules, squad_size, starting_size)
+      VALUES ($1, $2, $3, $4, $5, $6, $7)
+    `, [leagueId, draft_id, name.trim(), sport || null,
+        JSON.stringify(scoring_rules || {}),
+        parseInt(squad_size) || 15, parseInt(starting_size) || 11]);
+
+    res.json({ league_id: leagueId });
+  } catch (err) { console.error(err); res.status(500).json({ error: err.message }); }
+});
+
+app.get('/api/leagues/:id', async (req, res) => {
+  try {
+    const { league, error, status } = await getLeagueWithAuth(req.params.id, null);
+    if (error) return res.status(status).json({ error });
+
+    const teams = await db.all('SELECT * FROM teams WHERE draft_id = $1 ORDER BY pick_order', [league.draft_id]);
+    const rounds = await db.all('SELECT * FROM rounds WHERE league_id = $1 ORDER BY round_number', [req.params.id]);
+    const standings = await computeStandings(req.params.id, teams, rounds);
+    const draft = await db.get('SELECT name FROM drafts WHERE id = $1', [league.draft_id]);
+
+    const { commissioner_token, ...leaguePublic } = league;
+    res.json({ ...leaguePublic, draft_name: draft.name, standings, rounds });
+  } catch (err) { console.error(err); res.status(500).json({ error: err.message }); }
+});
+
+app.put('/api/leagues/:id/scoring-rules', async (req, res) => {
+  try {
+    const commToken = req.headers['x-commissioner-token'];
+    const { league, error, status } = await getLeagueWithAuth(req.params.id, commToken);
+    if (error) return res.status(status).json({ error });
+
+    await db.run('UPDATE leagues SET scoring_rules = $1 WHERE id = $2',
+      [JSON.stringify(req.body.scoring_rules), req.params.id]);
+    res.json({ success: true });
+  } catch (err) { console.error(err); res.status(500).json({ error: err.message }); }
+});
+
+app.post('/api/leagues/:id/rounds', async (req, res) => {
+  try {
+    const commToken = req.headers['x-commissioner-token'];
+    const { league, error, status } = await getLeagueWithAuth(req.params.id, commToken);
+    if (error) return res.status(status).json({ error });
+
+    const { name, lineup_deadline } = req.body;
+    if (!name?.trim()) return res.status(400).json({ error: 'Round name required' });
+
+    const countRow = await db.get('SELECT COUNT(*) as c FROM rounds WHERE league_id = $1', [req.params.id]);
+    const roundNumber = parseInt(countRow.c) + 1;
+    const roundId = randomUUID();
+    await db.run(
+      'INSERT INTO rounds (id, league_id, round_number, name, lineup_deadline) VALUES ($1,$2,$3,$4,$5)',
+      [roundId, req.params.id, roundNumber, name.trim(), lineup_deadline || null]
+    );
+    res.json({ round_id: roundId, round_number: roundNumber });
+  } catch (err) { console.error(err); res.status(500).json({ error: err.message }); }
+});
+
+app.put('/api/leagues/:id/rounds/:roundId/status', async (req, res) => {
+  try {
+    const commToken = req.headers['x-commissioner-token'];
+    const { league, error, status } = await getLeagueWithAuth(req.params.id, commToken);
+    if (error) return res.status(status).json({ error });
+
+    const { status: newStatus } = req.body;
+    if (!['upcoming', 'active', 'completed'].includes(newStatus))
+      return res.status(400).json({ error: 'Invalid status' });
+
+    await db.run('UPDATE rounds SET status = $1 WHERE id = $2 AND league_id = $3',
+      [newStatus, req.params.roundId, req.params.id]);
+    res.json({ success: true });
+  } catch (err) { console.error(err); res.status(500).json({ error: err.message }); }
+});
+
+app.get('/api/leagues/:id/rounds/:roundId', async (req, res) => {
+  try {
+    const { league, error, status } = await getLeagueWithAuth(req.params.id, null);
+    if (error) return res.status(status).json({ error });
+
+    const round = await db.get('SELECT * FROM rounds WHERE id = $1 AND league_id = $2',
+      [req.params.roundId, req.params.id]);
+    if (!round) return res.status(404).json({ error: 'Round not found' });
+
+    const teams = await db.all('SELECT * FROM teams WHERE draft_id = $1 ORDER BY pick_order', [league.draft_id]);
+    const players = await db.all('SELECT * FROM players WHERE draft_id = $1 AND drafted_by IS NOT NULL ORDER BY LOWER(name)', [league.draft_id]);
+    const statEntries = await db.all('SELECT * FROM stat_entries WHERE round_id = $1', [req.params.roundId]);
+    const entryMap = Object.fromEntries(statEntries.map(e => [e.player_id, e]));
+
+    const playerStats = players.map(p => {
+      const entry = entryMap[p.id];
+      const team = teams.find(t => t.id === p.drafted_by);
+      return {
+        player_id: p.id,
+        player_name: p.name,
+        position: p.position,
+        real_team: p.team_affiliation,
+        fantasy_team_id: p.drafted_by,
+        fantasy_team_name: team?.name,
+        stats: entry?.stats ?? null,
+        points: entry?.points ?? null,
+        points_breakdown: entry?.points_breakdown ?? null
+      };
+    }).sort((a, b) => (b.points ?? -Infinity) - (a.points ?? -Infinity));
+
+    const teamBreakdown = teams.map(team => {
+      const tp = playerStats.filter(p => p.fantasy_team_id === team.id);
+      const total = Math.round(tp.reduce((s, p) => s + (p.points ?? 0), 0) * 10) / 10;
+      return { team_id: team.id, team_name: team.name, round_points: total, players: tp };
+    }).sort((a, b) => b.round_points - a.round_points);
+
+    const { commissioner_token, ...leaguePublic } = league;
+    res.json({ league: leaguePublic, round, player_stats: playerStats, team_breakdown: teamBreakdown });
+  } catch (err) { console.error(err); res.status(500).json({ error: err.message }); }
+});
+
+app.post('/api/leagues/:id/rounds/:roundId/stats', async (req, res) => {
+  try {
+    const commToken = req.headers['x-commissioner-token'];
+    const { league, error, status } = await getLeagueWithAuth(req.params.id, commToken);
+    if (error) return res.status(status).json({ error });
+
+    const round = await db.get('SELECT * FROM rounds WHERE id = $1 AND league_id = $2',
+      [req.params.roundId, req.params.id]);
+    if (!round) return res.status(404).json({ error: 'Round not found' });
+
+    const { player_id, stats, preview_only } = req.body;
+    if (!player_id || !stats) return res.status(400).json({ error: 'player_id and stats required' });
+
+    const rules = (league.scoring_rules?.rules) || [];
+    const { total, breakdown } = calculatePoints(stats, rules);
+
+    if (preview_only) return res.json({ points: total, breakdown });
+
+    const player = await db.get('SELECT * FROM players WHERE id = $1 AND draft_id = $2',
+      [player_id, league.draft_id]);
+    if (!player) return res.status(404).json({ error: 'Player not found in this league' });
+
+    await db.run(`
+      INSERT INTO stat_entries (id, league_id, round_id, player_id, stats, points, points_breakdown)
+      VALUES ($1,$2,$3,$4,$5,$6,$7)
+      ON CONFLICT(round_id, player_id) DO UPDATE SET
+        stats = EXCLUDED.stats, points = EXCLUDED.points, points_breakdown = EXCLUDED.points_breakdown
+    `, [randomUUID(), req.params.id, req.params.roundId, player_id,
+        JSON.stringify(stats), total, JSON.stringify(breakdown)]);
+
+    res.json({ points: total, breakdown });
+  } catch (err) { console.error(err); res.status(500).json({ error: err.message }); }
+});
+
+app.get('/api/leagues/:id/team/:teamId', async (req, res) => {
+  try {
+    const { league, error, status } = await getLeagueWithAuth(req.params.id, null);
+    if (error) return res.status(status).json({ error });
+
+    const team = await db.get('SELECT * FROM teams WHERE id = $1 AND draft_id = $2',
+      [req.params.teamId, league.draft_id]);
+    if (!team) return res.status(404).json({ error: 'Team not found' });
+
+    const players = await db.all('SELECT * FROM players WHERE drafted_by = $1 ORDER BY LOWER(name)', [req.params.teamId]);
+    const rounds = await db.all('SELECT * FROM rounds WHERE league_id = $1 ORDER BY round_number', [req.params.id]);
+
+    const playerIds = players.map(p => p.id);
+    const entries = playerIds.length ? await db.all(`
+      SELECT se.*, r.name as round_name, r.round_number
+      FROM stat_entries se JOIN rounds r ON se.round_id = r.id
+      WHERE se.player_id = ANY($1) AND se.league_id = $2
+    `, [playerIds, req.params.id]) : [];
+
+    const playerData = players.map(p => {
+      const pEntries = entries.filter(e => e.player_id === p.id)
+        .sort((a, b) => a.round_number - b.round_number);
+      const totalPts = Math.round(pEntries.reduce((s, e) => s + e.points, 0) * 10) / 10;
+      return { ...p, round_stats: pEntries, total_points: totalPts };
+    }).sort((a, b) => b.total_points - a.total_points);
+
+    const { commissioner_token, ...leaguePublic } = league;
+    res.json({ league: leaguePublic, team, players: playerData, rounds });
+  } catch (err) { console.error(err); res.status(500).json({ error: err.message }); }
 });
 
 // ── Socket.io ─────────────────────────────────────────────────────────────────

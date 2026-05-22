@@ -174,7 +174,13 @@
   <!-- Completed State -->
   <div id="draft-completed" style="display:none">
     <div class="completed-content">
-      <h2>🎉 Draft Complete!</h2>
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:20px;flex-wrap:wrap;gap:12px">
+        <h2 style="margin:0">🎉 Draft Complete!</h2>
+        <div style="display:flex;gap:8px">
+          <a id="view-league-btn" href="#" class="btn btn-primary" style="display:none">View League →</a>
+          <button id="start-league-btn" class="btn btn-success" style="display:none">Start League →</button>
+        </div>
+      </div>
       <div class="rosters-grid" id="final-rosters"></div>
     </div>
   </div>

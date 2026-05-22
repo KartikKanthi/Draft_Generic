@@ -646,7 +646,22 @@ function renderAllTeams(onClockTeam) {
   }).join('');
 }
 
-function renderCompleted() {
+async function renderCompleted() {
+  // Show league buttons for commissioner
+  const startBtn = document.getElementById('start-league-btn');
+  const viewBtn = document.getElementById('view-league-btn');
+  if (isCommissioner) {
+    const existingLeagueId = localStorage.getItem(`league_${DRAFT_ID}`);
+    if (existingLeagueId) {
+      viewBtn.href = `/league.html?id=${existingLeagueId}`;
+      viewBtn.style.display = '';
+      startBtn.style.display = 'none';
+    } else {
+      startBtn.style.display = '';
+      viewBtn.style.display = 'none';
+    }
+  }
+
   const teamMap = Object.fromEntries(state.teams.map(t => [t.id, t]));
   const sortedTeams = [...state.teams].sort((a, b) => a.pick_order - b.pick_order);
   const numTeams = state.teams.length;
@@ -787,6 +802,10 @@ async function deleteDraft() {
 
 document.getElementById('delete-draft-btn')?.addEventListener('click', deleteDraft);
 document.getElementById('delete-draft-btn-waiting')?.addEventListener('click', deleteDraft);
+
+document.getElementById('start-league-btn')?.addEventListener('click', () => {
+  location.href = `/league-setup.html?draft_id=${DRAFT_ID}`;
+});
 
 document.getElementById('upload-csv-btn')?.addEventListener('click', async () => {
   const file = document.getElementById('upload-csv').files[0];

@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Create League</title>
+  <link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+  <div class="home-container" style="max-width:760px">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:24px">
+      <h1 class="app-title" style="margin-bottom:0">Create League</h1>
+      <a href="/" class="btn">← Home</a>
+    </div>
+
+    <div id="loading-msg" style="color:var(--text-muted);text-align:center;padding:40px">Loading draft…</div>
+    <div id="setup-form" style="display:none">
+
+      <div class="league-section">
+        <div class="form-group">
+          <label>Draft</label>
+          <div id="draft-summary" class="info-box"></div>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label>League Name</label>
+            <input type="text" id="league-name" placeholder="IPL 2026 Fantasy League" required>
+          </div>
+          <div class="form-group">
+            <label>Sport / Context <small style="color:var(--text-muted)">(optional)</small></label>
+            <input type="text" id="league-sport" placeholder="Cricket, Football, Basketball…">
+          </div>
+        </div>
+      </div>
+
+      <div class="league-section">
+        <h3 style="margin-bottom:16px">Scoring Rules</h3>
+        <div class="form-group">
+          <label>Start from a preset</label>
+          <div style="display:flex;gap:8px;flex-wrap:wrap" id="preset-btns">
+            <button class="btn btn-sm preset-btn" data-preset="cricket">Cricket (IPL-style)</button>
+            <button class="btn btn-sm preset-btn" data-preset="football">Football / Soccer</button>
+            <button class="btn btn-sm preset-btn" data-preset="basketball">Basketball</button>
+            <button class="btn btn-sm preset-btn" data-preset="custom">Start Blank</button>
+          </div>
+        </div>
+
+        <div id="rules-editor">
+          <h4 style="margin-bottom:8px;color:var(--text-muted);font-size:12px;text-transform:uppercase;letter-spacing:.05em">Stats Tracked</h4>
+          <div id="stats-list" class="rule-list"></div>
+          <button class="btn btn-sm" id="add-stat-btn" style="margin-top:8px">+ Add Stat</button>
+
+          <h4 style="margin:20px 0 8px;color:var(--text-muted);font-size:12px;text-transform:uppercase;letter-spacing:.05em">Scoring Rules</h4>
+          <div id="rules-list" class="rule-list"></div>
+          <button class="btn btn-sm" id="add-rule-btn" style="margin-top:8px">+ Add Rule</button>
+        </div>
+      </div>
+
+      <button class="btn btn-primary btn-full" id="create-league-btn" style="margin-top:8px">Create League →</button>
+    </div>
+
+    <!-- Add Stat Modal -->
+    <div class="modal-overlay" id="stat-modal" style="display:none">
+      <div class="modal">
+        <h3>Add Stat</h3>
+        <div class="form-group" style="margin-top:16px">
+          <label>Stat Key <small style="color:var(--text-muted)">(no spaces, e.g. goals_scored)</small></label>
+          <input type="text" id="stat-key-input" placeholder="goals_scored">
+        </div>
+        <div class="form-group">
+          <label>Label (shown to users)</label>
+          <input type="text" id="stat-label-input" placeholder="Goals Scored">
+        </div>
+        <div class="modal-actions">
+          <button class="btn" id="stat-cancel-btn">Cancel</button>
+          <button class="btn btn-primary" id="stat-confirm-btn">Add</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Add Rule Modal -->
+    <div class="modal-overlay" id="rule-modal" style="display:none">
+      <div class="modal" style="min-width:340px">
+        <h3 id="rule-modal-title">Add Rule</h3>
+        <div style="margin-top:16px;display:flex;flex-direction:column;gap:12px">
+          <div class="form-group">
+            <label>Rule Label</label>
+            <input type="text" id="rule-label-input" placeholder="Per Goal">
+          </div>
+          <div class="form-group">
+            <label>Type</label>
+            <select id="rule-type-select">
+              <option value="per_unit">Per Unit — X pts per [stat]</option>
+              <option value="flat">Flat Bonus — X pts if [stat] ≥ threshold</option>
+              <option value="flat_exact">Flat Exact — X pts if [stat] = value</option>
+              <option value="banded_computed">Banded — computed ratio (e.g. strike rate, economy)</option>
+              <option value="multiplier">Multiplier — multiply another rule if [stat] ≥ threshold</option>
+            </select>
+          </div>
+
+          <!-- per_unit / flat / flat_exact / multiplier -->
+          <div id="rule-stat-row" class="form-group">
+            <label>Stat</label>
+            <select id="rule-stat-select"></select>
+          </div>
+          <div id="rule-points-row" class="form-group">
+            <label id="rule-points-label">Points per unit</label>
+            <input type="number" id="rule-points-input" step="0.1" placeholder="5">
+          </div>
+          <div id="rule-min-row" class="form-group" style="display:none">
+            <label>Threshold (min value)</label>
+            <input type="number" id="rule-min-input" step="0.1" placeholder="1">
+          </div>
+          <div id="rule-value-row" class="form-group" style="display:none">
+            <label>Exact value to match</label>
+            <input type="number" id="rule-value-input" step="0.1" placeholder="1">
+          </div>
+
+          <!-- banded_computed -->
+          <div id="rule-banded-section" style="display:none">
+            <div class="form-row">
+              <div class="form-group">
+                <label>Numerator stat</label>
+                <select id="rule-numerator-select"></select>
+              </div>
+              <div class="form-group">
+                <label>Denominator stat</label>
+                <select id="rule-denominator-select"></select>
+              </div>
+            </div>
+            <div class="form-row">
+              <div class="form-group">
+                <label>Scale (×)</label>
+                <input type="number" id="rule-scale-input" value="100" step="1">
+              </div>
+              <div class="form-group">
+                <label>Min denominator</label>
+                <input type="number" id="rule-min-denom-input" value="10" step="0.1">
+              </div>
+            </div>
+            <div style="margin-top:8px">
+              <label style="font-size:12px;color:var(--text-muted);display:block;margin-bottom:6px">Bands (max blank = no upper limit)</label>
+              <div id="bands-list"></div>
+              <button type="button" class="btn btn-sm" id="add-band-btn" style="margin-top:6px">+ Add Band</button>
+            </div>
+          </div>
+
+          <!-- multiplier -->
+          <div id="rule-multiplier-section" style="display:none">
+            <div class="form-group">
+              <label>Target Rule ID to multiply</label>
+              <select id="rule-target-select"></select>
+            </div>
+            <div class="form-group">
+              <label>Multiplier value</label>
+              <input type="number" id="rule-multiplier-input" step="0.1" value="2" placeholder="2.5">
+            </div>
+            <div class="form-group">
+              <label>Apply when stat ≥</label>
+              <input type="number" id="rule-mult-min-input" step="1" placeholder="2">
+            </div>
+          </div>
+        </div>
+        <div class="modal-actions" style="margin-top:20px">
+          <button class="btn" id="rule-cancel-btn">Cancel</button>
+          <button class="btn btn-primary" id="rule-confirm-btn">Save Rule</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="toast-container"></div>
+  <script src="/js/league-setup.js" type="module"></script>
+</body>
+</html>

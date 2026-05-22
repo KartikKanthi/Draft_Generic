@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>League</title>
+  <link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+  <header class="draft-header">
+    <div class="header-left">
+      <a href="/" class="back-link">← Home</a>
+      <h1 id="league-name">Loading…</h1>
+      <span class="badge badge-blue" id="sport-badge" style="display:none"></span>
+    </div>
+    <div class="header-right">
+      <button class="btn btn-sm" id="settings-btn" style="display:none">⚙ Scoring Rules</button>
+      <button class="btn btn-sm btn-primary" id="add-round-btn" style="display:none">+ New Round</button>
+    </div>
+  </header>
+
+  <div style="max-width:1000px;margin:0 auto;padding:16px">
+    <div class="tab-nav" style="margin-top:0">
+      <button class="tab-btn active" data-tab="standings">Standings</button>
+      <button class="tab-btn" data-tab="rounds">Rounds</button>
+      <button class="tab-btn" data-tab="my-team">My Team</button>
+    </div>
+
+    <!-- Standings -->
+    <div class="tab-panel active" id="tab-standings">
+      <div id="standings-container"></div>
+    </div>
+
+    <!-- Rounds -->
+    <div class="tab-panel" id="tab-rounds">
+      <div id="rounds-container"></div>
+    </div>
+
+    <!-- My Team -->
+    <div class="tab-panel" id="tab-my-team">
+      <div id="my-team-container">
+        <div style="color:var(--text-muted);padding:24px;text-align:center">
+          Select your team below to view your roster and points.
+        </div>
+        <div id="team-selector" style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:16px"></div>
+        <div id="team-detail"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Add Round Modal -->
+  <div class="modal-overlay" id="round-modal" style="display:none">
+    <div class="modal">
+      <h3>New Round</h3>
+      <div style="margin-top:16px;display:flex;flex-direction:column;gap:12px">
+        <div class="form-group">
+          <label>Round Name</label>
+          <input type="text" id="round-name-input" placeholder="Week 1, Gameweek 3…">
+        </div>
+      </div>
+      <div class="modal-actions">
+        <button class="btn" id="round-cancel-btn">Cancel</button>
+        <button class="btn btn-primary" id="round-confirm-btn">Create Round</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="toast-container"></div>
+  <script src="/js/league.js" type="module"></script>
+</body>
+</html>
