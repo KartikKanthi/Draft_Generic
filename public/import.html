@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Import League from Google Sheet</title>
+  <link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+  <header class="draft-header">
+    <div class="header-left">
+      <a href="/" class="back-link">← Home</a>
+      <h1>Import from Google Sheet</h1>
+    </div>
+  </header>
+
+  <div style="max-width:640px;margin:32px auto;padding:0 16px">
+    <div class="league-section">
+      <p style="color:var(--text-muted);margin-bottom:4px">Reads the roster tab from a Google Sheet and creates a fully populated league — teams, players, rounds, and weekly scores.</p>
+      <p style="color:var(--text-muted);margin-bottom:20px;font-size:13px">The sheet must be set to <strong>Anyone with the link can view</strong>.</p>
+
+      <div class="form-group">
+        <label>Google Sheet URL</label>
+        <input type="text" id="sheet-input" placeholder="https://docs.google.com/spreadsheets/d/…">
+      </div>
+      <div class="form-group">
+        <label>League Name</label>
+        <input type="text" id="league-name-input" value="IPL Fantasy 2026">
+      </div>
+      <button class="btn btn-primary" id="import-btn" style="min-width:140px">Import</button>
+    </div>
+
+    <div id="result" style="display:none;margin-top:24px"></div>
+  </div>
+
+  <div id="toast-container"></div>
+  <script>
+    function escHtml(s) {
+      return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    }
+
+    function toast(msg, type = 'info') {
+      const t = document.createElement('div');
+      t.className = `toast toast-${type}`;
+      t.textContent = msg;
+      document.getElementById('toast-container').appendChild(t);
+      setTimeout(() => t.remove(), 3500);
+    }
+
+    function copyText(text, btn) {
+      navigator.clipboard.writeText(text).then(() => {
+        const orig = btn.textContent;
+        btn.textContent = 'Copied!';
+        setTimeout(() => btn.textContent = orig, 1500);
+      });
+    }
+
+    document.getElementById('import-btn').addEventListener('click', async () => {
+      const raw = document.getElementById('sheet-input').value.trim();
+      const leagueName = document.getElementById('league-name-input').value.trim();
+      if (!raw) { toast('Paste the Google Sheet URL first', 'error'); return; }
+
+      const match = raw.match(/\/spreadsheets\/d\/([a-zA-Z0-9_-]+)/);
+      const sheetId = match ? match[1] : raw;
+
+      const btn = document.getElementById('import-btn');
+      btn.disabled = true;
+      btn.textContent = 'Importing… (may take 20–30 s)';
+
+      try {
+        const res = await fetch('/api/import/ipl-sheet', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ sheet_id: sheetId, league_name: leagueName })
+        });
+        const data = await res.json();
+        btn.disabled = false;
+        btn.textContent = 'Import';
+
+        if (!res.ok) { toast(data.error, 'error'); return; }
+
+        // Save commissioner token to localStorage for this browser
+        localStorage.setItem(`commissioner_${data.draft_id}`, data.commissioner_token);
+
+        const origin = location.origin;
+        const leagueUrl = `${origin}/league.html?id=${data.league_id}`;
+
+        const resultEl = document.getElementById('result');
+        resultEl.style.display = '';
+        resultEl.innerHTML = `
+          <div class="league-section" style="margin-bottom:16px">
+            <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px;flex-wrap:wrap">
+              <h3 style="margin:0">Import complete</h3>
+              <span class="badge badge-success">${data.rounds_imported} rounds · ${data.players_imported} players · ${data.teams.length} teams</span>
+            </div>
+
+            <div style="margin-bottom:16px">
+              <a href="${leagueUrl}" class="btn btn-primary">Open League →</a>
+            </div>
+
+            <div class="info-box" style="margin-bottom:20px">
+              <strong>You are logged in as commissioner on this device.</strong><br>
+              Share each manager's link below so they can log in on their own device.
+            </div>
+
+            <h4 style="font-size:13px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:10px">Team Login Links</h4>
+            <div style="display:flex;flex-direction:column;gap:8px;margin-bottom:20px">
+              ${data.teams.map(t => {
+                const claimUrl = `${origin}/claim.html?draft=${data.draft_id}&league=${data.league_id}&token=${t.team_token}&name=${encodeURIComponent(t.name)}`;
+                return `
+                  <div style="padding:10px 14px;background:var(--surface-2);border-radius:8px;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px">
+                    <div>
+                      <strong>${escHtml(t.name)}</strong>
+                      <div style="font-size:11px;color:var(--text-muted);margin-top:2px;word-break:break-all;max-width:360px">${claimUrl}</div>
+                    </div>
+                    <button class="btn btn-sm" onclick="copyText('${claimUrl}', this)">Copy link</button>
+                  </div>
+                `;
+              }).join('')}
+            </div>
+
+            <details style="margin-top:4px">
+              <summary style="cursor:pointer;color:var(--text-muted);font-size:13px">Commissioner token (keep private)</summary>
+              <div style="font-family:monospace;font-size:12px;padding:8px;background:var(--surface-2);border-radius:6px;margin-top:6px;word-break:break-all">${data.commissioner_token}</div>
+            </details>
+          </div>
+        `;
+
+        toast(`Imported ${data.teams.length} teams, ${data.rounds_imported} rounds, ${data.players_imported} players`, 'success');
+
+      } catch (err) {
+        btn.disabled = false;
+        btn.textContent = 'Import';
+        toast('Import failed: ' + err.message, 'error');
+      }
+    });
+  </script>
+</body>
+</html>

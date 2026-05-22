@@ -723,6 +723,171 @@ app.post('/api/leagues/:id/rounds/:roundId/lineup', async (req, res) => {
   } catch (err) { console.error(err); res.status(500).json({ error: err.message }); }
 });
 
+// ── Sheet Import ─────────────────────────────────────────────────────────────
+
+function parseRosterData(rows) {
+  const managers = [];
+  let currentManager = null;
+  let isStarters = true;
+
+  for (let i = 2; i < rows.length; i++) {
+    const row = rows[i];
+    const managerName = (row[0] || '').trim();
+    const sectionLabel = (row[3] || '').trim();
+
+    if (!managerName) continue; // separator / summary rows
+
+    if (!currentManager || currentManager.name !== managerName) {
+      if (currentManager) managers.push(currentManager);
+      currentManager = { name: managerName, players: {} };
+      isStarters = true;
+    }
+
+    if (sectionLabel === 'Sub') isStarters = false;
+    else if (sectionLabel === 'Team') isStarters = true;
+
+    // Each week occupies 3 cols starting at col 4: [playerName, role, points]
+    for (let w = 0; w < 11; w++) {
+      const base = 4 + w * 3;
+      const name = (row[base] || '').trim();
+      if (!name || name === '#N/A') continue;
+
+      const role = (row[base + 1] || '').trim().replace(/\s*-\s*\d+$/, '');
+      const pts = parseFloat(row[base + 2]);
+      if (isNaN(pts)) continue;
+
+      if (!currentManager.players[name]) {
+        currentManager.players[name] = { role, weeks: {} };
+      }
+      currentManager.players[name].weeks[w + 1] = { pts, isStarter: isStarters };
+    }
+  }
+
+  if (currentManager) managers.push(currentManager);
+  return managers;
+}
+
+app.post('/api/import/ipl-sheet', async (req, res) => {
+  try {
+    const { sheet_id, league_name } = req.body;
+    if (!sheet_id) return res.status(400).json({ error: 'sheet_id required' });
+
+    const csvUrl = `https://docs.google.com/spreadsheets/d/${sheet_id}/gviz/tq?tqx=out:csv&gid=583658764`;
+    const csvRes = await fetch(csvUrl);
+    if (!csvRes.ok) return res.status(400).json({ error: 'Could not fetch the sheet. Make sure it is set to "Anyone with the link can view".' });
+    const csvText = await csvRes.text();
+
+    const rows = parse(csvText, { relax_quotes: true, skip_empty_lines: false });
+    const managers = parseRosterData(rows);
+    if (!managers.length) return res.status(400).json({ error: 'No roster data found. Check the sheet format.' });
+
+    const draftId = randomUUID();
+    const commToken = randomUUID();
+    const name = league_name?.trim() || 'IPL Fantasy League';
+
+    await db.run(`
+      INSERT INTO drafts (id, name, format, mode, num_teams, pick_timer, auction_budget, commissioner_token, status)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+    `, [draftId, name, 'auction', 'live', managers.length, 0, 200, commToken, 'completed']);
+
+    // Create one team per manager
+    const teamMap = {};
+    for (let i = 0; i < managers.length; i++) {
+      const m = managers[i];
+      const teamId = randomUUID();
+      const teamToken = randomUUID();
+      await db.run(
+        'INSERT INTO teams (id, draft_id, name, token, pick_order, budget) VALUES ($1,$2,$3,$4,$5,$6)',
+        [teamId, draftId, m.name, teamToken, i, 200]
+      );
+      teamMap[m.name] = { id: teamId, token: teamToken };
+    }
+
+    // Create all unique players, assigning each to their manager's team
+    const playerMap = {};
+    for (const m of managers) {
+      const team = teamMap[m.name];
+      let sortOrder = 0;
+      for (const [playerName, pData] of Object.entries(m.players)) {
+        if (playerMap[playerName]) continue;
+        const playerId = randomUUID();
+        await db.run(
+          'INSERT INTO players (id, draft_id, name, position, drafted_by, sort_order) VALUES ($1,$2,$3,$4,$5,$6)',
+          [playerId, draftId, playerName, pData.role || null, team.id, sortOrder++]
+        );
+        playerMap[playerName] = playerId;
+      }
+    }
+
+    // Create league with cricket scoring preset
+    const leagueId = randomUUID();
+    await db.run(`
+      INSERT INTO leagues (id, draft_id, name, sport, scoring_rules, squad_size, starting_size)
+      VALUES ($1,$2,$3,$4,$5,$6,$7)
+    `, [leagueId, draftId, name, 'cricket', JSON.stringify(SCORING_PRESETS.cricket), 15, 11]);
+
+    // Determine which weeks have data (skip week 11+ which shows #N/A)
+    const weekSet = new Set();
+    for (const m of managers)
+      for (const pData of Object.values(m.players))
+        for (const w of Object.keys(pData.weeks))
+          weekSet.add(parseInt(w));
+    const weeks = [...weekSet].sort((a, b) => a - b).filter(w => w <= 10);
+
+    // Create rounds (all completed)
+    const roundMap = {};
+    for (const w of weeks) {
+      const roundId = randomUUID();
+      await db.run(
+        'INSERT INTO rounds (id, league_id, round_number, name, status) VALUES ($1,$2,$3,$4,$5)',
+        [roundId, leagueId, w, `Week ${w}`, 'completed']
+      );
+      roundMap[w] = roundId;
+    }
+
+    // Bulk-insert stat entries and lineup rows
+    await db.transaction(async (client) => {
+      for (const m of managers) {
+        const team = teamMap[m.name];
+        for (const w of weeks) {
+          const roundId = roundMap[w];
+          for (const [playerName, pData] of Object.entries(m.players)) {
+            const weekData = pData.weeks[w];
+            if (!weekData) continue;
+            const playerId = playerMap[playerName];
+            if (!playerId) continue;
+
+            await client.query(`
+              INSERT INTO stat_entries (id, league_id, round_id, player_id, stats, points, points_breakdown)
+              VALUES ($1,$2,$3,$4,'{}', $5,'{}')
+              ON CONFLICT(round_id, player_id) DO UPDATE SET points = EXCLUDED.points
+            `, [randomUUID(), leagueId, roundId, playerId, weekData.pts]);
+
+            await client.query(`
+              INSERT INTO lineups (id, league_id, round_id, team_id, player_id, is_starter)
+              VALUES ($1,$2,$3,$4,$5,$6)
+              ON CONFLICT(round_id, team_id, player_id) DO UPDATE SET is_starter = EXCLUDED.is_starter
+            `, [randomUUID(), leagueId, roundId, team.id, playerId, weekData.isStarter]);
+          }
+        }
+      }
+    });
+
+    res.json({
+      success: true,
+      draft_id: draftId,
+      league_id: leagueId,
+      commissioner_token: commToken,
+      players_imported: Object.keys(playerMap).length,
+      rounds_imported: weeks.length,
+      teams: Object.entries(teamMap).map(([n, t]) => ({ name: n, team_id: t.id, team_token: t.token }))
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ── Trade Routes ─────────────────────────────────────────────────────────────
 
 async function enrichTrade(trade) {

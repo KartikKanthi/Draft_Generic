@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Joining league…</title>
+  <link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+  <div style="max-width:480px;margin:80px auto;padding:0 16px;text-align:center">
+    <div id="status" style="color:var(--text-muted);font-size:15px">Logging you in…</div>
+  </div>
+
+  <script>
+    async function claim() {
+      const p = new URLSearchParams(location.search);
+      const draftId = p.get('draft');
+      const leagueId = p.get('league');
+      const token = p.get('token');
+      const name = p.get('name');
+
+      const el = document.getElementById('status');
+
+      if (!draftId || !token || !leagueId) {
+        el.innerHTML = '<span style="color:var(--danger)">Invalid link — missing parameters.</span>';
+        return;
+      }
+
+      try {
+        const res = await fetch(`/api/drafts/${draftId}/team-by-token`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ token })
+        });
+        const data = await res.json();
+
+        if (!res.ok) {
+          el.innerHTML = `<span style="color:var(--danger)">Could not verify token: ${data.error}</span>`;
+          return;
+        }
+
+        localStorage.setItem(`team_${draftId}_token`, token);
+        localStorage.setItem(`team_${draftId}_id`, data.team_id);
+
+        el.innerHTML = `
+          <div style="font-size:18px;margin-bottom:8px">Welcome${name ? ', <strong>' + name + '</strong>' : ''}!</div>
+          <div style="color:var(--text-muted);margin-bottom:20px">You are now logged in on this device.</div>
+          <a href="/league.html?id=${leagueId}" class="btn btn-primary" style="font-size:15px">Open League →</a>
+        `;
+
+      } catch (err) {
+        el.innerHTML = `<span style="color:var(--danger)">Error: ${err.message}</span>`;
+      }
+    }
+
+    claim();
+  </script>
+</body>
+</html>
