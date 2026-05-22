@@ -813,3 +813,20 @@ body.draft-page {
 
 .round-card:hover { border-color: var(--primary); }
 
+/* Lineup modal player rows */
+.lineup-player-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: background 0.1s, border-color 0.1s;
+  user-select: none;
+}
+.lineup-player-row:hover { background: var(--surface2); }
+.lineup-player-row.is-starter { border-color: var(--success); background: rgba(63,185,80,0.06); }
+.lineup-player-row.is-bench { opacity: 0.65; }
+.lineup-status-icon { font-size: 14px; width: 16px; text-align: center; }
+

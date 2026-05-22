@@ -103,16 +103,23 @@ function renderPlayerStats() {
           ${players.map((p, i) => {
             const hasStats = p.points !== null;
             const breakdown = p.points_breakdown ? Object.entries(p.points_breakdown).map(([k,v])=>`${k}: ${v}`).join(' · ') : '';
+            const starterBadge = p.is_starter === true
+              ? '<span class="badge badge-success" style="font-size:10px;margin-left:6px">▲ S</span>'
+              : p.is_starter === false
+              ? '<span class="badge badge-muted" style="font-size:10px;margin-left:6px">▼ B</span>'
+              : '';
+            const isBench = p.is_starter === false;
             return `
-              <tr>
-                <td style="color:var(--text-muted)">${hasStats ? i+1 : '—'}</td>
+              <tr style="${isBench ? 'opacity:0.55' : ''}">
+                <td style="color:var(--text-muted)">${hasStats && !isBench ? i+1 : '—'}</td>
                 <td>
                   <strong>${escHtml(p.player_name)}</strong>
                   ${p.position ? `<span style="color:var(--text-muted);margin-left:6px;font-size:12px">${escHtml(p.position)}</span>` : ''}
+                  ${starterBadge}
                   ${p.real_team ? `<br><small style="color:var(--text-muted)">${escHtml(p.real_team)}</small>` : ''}
                 </td>
                 <td style="color:var(--text-muted)">${escHtml(p.fantasy_team_name || '—')}</td>
-                <td class="pts-col ${hasStats ? 'total-pts' : ''}">${hasStats ? p.points : '<span style="color:var(--text-dim)">—</span>'}</td>
+                <td class="pts-col ${hasStats && !isBench ? 'total-pts' : ''}">${hasStats ? p.points : '<span style="color:var(--text-dim)">—</span>'}</td>
                 <td style="color:var(--text-muted);font-size:12px;max-width:260px">${escHtml(breakdown)}</td>
                 ${COMMISSIONER_TOKEN ? `<td><button class="btn btn-sm" onclick="openStatEntry('${p.player_id}')">${hasStats ? 'Edit' : 'Enter'}</button></td>` : ''}
               </tr>
@@ -138,16 +145,25 @@ function renderTeamBreakdown() {
         <div style="display:flex;align-items:center;gap:10px">
           <span class="rank-cell">${rank+1}</span>
           <strong>${escHtml(team.team_name)}</strong>
+          ${team.lineup_submitted
+            ? '<span class="badge badge-success" style="font-size:10px">Lineup set</span>'
+            : '<span class="badge badge-muted" style="font-size:10px">No lineup — all count</span>'}
         </div>
         <span class="total-pts" style="font-size:18px">${team.round_points} pts</span>
       </div>
       <div style="display:flex;flex-direction:column;gap:4px">
-        ${team.players.map(p => `
-          <div style="display:flex;justify-content:space-between;align-items:center;padding:4px 0;border-top:1px solid var(--border)">
-            <span style="font-size:13px">${escHtml(p.player_name)} ${p.position ? `<span style="color:var(--text-muted)">(${escHtml(p.position)})</span>` : ''}</span>
-            <span style="font-size:13px;${p.points !== null ? 'color:var(--primary)' : 'color:var(--text-dim)'}">${p.points ?? '—'}</span>
-          </div>
-        `).join('')}
+        ${team.players.map(p => {
+          const isBench = p.is_starter === false;
+          return `
+            <div style="display:flex;justify-content:space-between;align-items:center;padding:4px 0;border-top:1px solid var(--border);${isBench ? 'opacity:0.5' : ''}">
+              <span style="font-size:13px">
+                ${p.is_starter === true ? '▲ ' : p.is_starter === false ? '▼ ' : ''}
+                ${escHtml(p.player_name)} ${p.position ? `<span style="color:var(--text-muted)">(${escHtml(p.position)})</span>` : ''}
+              </span>
+              <span style="font-size:13px;${p.points !== null && !isBench ? 'color:var(--primary)' : 'color:var(--text-dim)'}">${p.points ?? '—'}</span>
+            </div>
+          `;
+        }).join('')}
       </div>
     </div>
   `).join('');

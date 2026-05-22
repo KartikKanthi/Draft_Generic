@@ -106,6 +106,18 @@ await pool.query(`
   )
 `);
 
+await pool.query(`
+  CREATE TABLE IF NOT EXISTS lineups (
+    id TEXT PRIMARY KEY,
+    league_id TEXT NOT NULL REFERENCES leagues(id),
+    round_id TEXT NOT NULL REFERENCES rounds(id),
+    team_id TEXT NOT NULL REFERENCES teams(id),
+    player_id TEXT NOT NULL REFERENCES players(id),
+    is_starter BOOLEAN NOT NULL DEFAULT true,
+    UNIQUE(round_id, team_id, player_id)
+  )
+`);
+
 // Safe migrations for existing databases
 for (const sql of [
   'ALTER TABLE drafts ADD COLUMN IF NOT EXISTS position_requirements TEXT',

@@ -391,11 +391,28 @@ async function computeStandings(leagueId, teams, rounds) {
     WHERE se.league_id = $1
   `, [leagueId]);
 
+  const allLineups = await db.all(
+    'SELECT round_id, team_id, player_id, is_starter FROM lineups WHERE league_id = $1',
+    [leagueId]
+  );
+
+  // Build lookup: { round_id: { team_id: { submitted: true, starters: Set<player_id> } } }
+  const lineupMap = {};
+  for (const l of allLineups) {
+    if (!lineupMap[l.round_id]) lineupMap[l.round_id] = {};
+    if (!lineupMap[l.round_id][l.team_id]) lineupMap[l.round_id][l.team_id] = { submitted: true, starters: new Set() };
+    if (l.is_starter) lineupMap[l.round_id][l.team_id].starters.add(l.player_id);
+  }
+
   return teams.map(team => {
     const teamEntries = allEntries.filter(e => e.drafted_by === team.id);
     const roundPoints = rounds.map(r => {
-      const pts = teamEntries.filter(e => e.round_id === r.id)
-        .reduce((s, e) => s + e.points, 0);
+      const rEntries = teamEntries.filter(e => e.round_id === r.id);
+      const lineup = lineupMap[r.id]?.[team.id];
+      const scoringEntries = lineup?.submitted
+        ? rEntries.filter(e => lineup.starters.has(e.player_id))
+        : rEntries;
+      const pts = scoringEntries.reduce((s, e) => s + e.points, 0);
       return { round_id: r.id, round_name: r.name, round_number: r.round_number, points: Math.round(pts * 10) / 10 };
     });
     const total = Math.round(roundPoints.reduce((s, r) => s + r.points, 0) * 10) / 10;
@@ -508,11 +525,21 @@ app.get('/api/leagues/:id/rounds/:roundId', async (req, res) => {
     const teams = await db.all('SELECT * FROM teams WHERE draft_id = $1 ORDER BY pick_order', [league.draft_id]);
     const players = await db.all('SELECT * FROM players WHERE draft_id = $1 AND drafted_by IS NOT NULL ORDER BY LOWER(name)', [league.draft_id]);
     const statEntries = await db.all('SELECT * FROM stat_entries WHERE round_id = $1', [req.params.roundId]);
+    const lineupRows = await db.all('SELECT * FROM lineups WHERE round_id = $1', [req.params.roundId]);
     const entryMap = Object.fromEntries(statEntries.map(e => [e.player_id, e]));
+
+    // Build lineup map: { team_id: { submitted, starters: Set } }
+    const lineupMap = {};
+    for (const l of lineupRows) {
+      if (!lineupMap[l.team_id]) lineupMap[l.team_id] = { submitted: true, starters: new Set() };
+      if (l.is_starter) lineupMap[l.team_id].starters.add(l.player_id);
+    }
 
     const playerStats = players.map(p => {
       const entry = entryMap[p.id];
       const team = teams.find(t => t.id === p.drafted_by);
+      const lineup = lineupMap[p.drafted_by];
+      const isStarter = lineup ? lineup.starters.has(p.id) : null; // null = no lineup submitted
       return {
         player_id: p.id,
         player_name: p.name,
@@ -520,6 +547,7 @@ app.get('/api/leagues/:id/rounds/:roundId', async (req, res) => {
         real_team: p.team_affiliation,
         fantasy_team_id: p.drafted_by,
         fantasy_team_name: team?.name,
+        is_starter: isStarter,
         stats: entry?.stats ?? null,
         points: entry?.points ?? null,
         points_breakdown: entry?.points_breakdown ?? null
@@ -528,8 +556,10 @@ app.get('/api/leagues/:id/rounds/:roundId', async (req, res) => {
 
     const teamBreakdown = teams.map(team => {
       const tp = playerStats.filter(p => p.fantasy_team_id === team.id);
-      const total = Math.round(tp.reduce((s, p) => s + (p.points ?? 0), 0) * 10) / 10;
-      return { team_id: team.id, team_name: team.name, round_points: total, players: tp };
+      const lineup = lineupMap[team.id];
+      const scoringPlayers = lineup?.submitted ? tp.filter(p => p.is_starter) : tp;
+      const total = Math.round(scoringPlayers.reduce((s, p) => s + (p.points ?? 0), 0) * 10) / 10;
+      return { team_id: team.id, team_name: team.name, round_points: total, lineup_submitted: !!lineup?.submitted, players: tp };
     }).sort((a, b) => b.round_points - a.round_points);
 
     const { commissioner_token, ...leaguePublic } = league;
@@ -585,20 +615,111 @@ app.get('/api/leagues/:id/team/:teamId', async (req, res) => {
 
     const playerIds = players.map(p => p.id);
     const entries = playerIds.length ? await db.all(`
-      SELECT se.*, r.name as round_name, r.round_number
+      SELECT se.*, r.name as round_name, r.round_number, r.status as round_status
       FROM stat_entries se JOIN rounds r ON se.round_id = r.id
       WHERE se.player_id = ANY($1) AND se.league_id = $2
     `, [playerIds, req.params.id]) : [];
 
+    const lineupRows = await db.all(
+      'SELECT * FROM lineups WHERE team_id = $1 AND league_id = $2',
+      [req.params.teamId, req.params.id]
+    );
+
+    // Per-round lineup lookup: { round_id: { submitted, starters: Set } }
+    const lineupByRound = {};
+    for (const l of lineupRows) {
+      if (!lineupByRound[l.round_id]) lineupByRound[l.round_id] = { submitted: true, starters: new Set() };
+      if (l.is_starter) lineupByRound[l.round_id].starters.add(l.player_id);
+    }
+
     const playerData = players.map(p => {
       const pEntries = entries.filter(e => e.player_id === p.id)
-        .sort((a, b) => a.round_number - b.round_number);
-      const totalPts = Math.round(pEntries.reduce((s, e) => s + e.points, 0) * 10) / 10;
+        .sort((a, b) => a.round_number - b.round_number)
+        .map(e => ({
+          ...e,
+          is_starter: lineupByRound[e.round_id]
+            ? lineupByRound[e.round_id].starters.has(p.id)
+            : null
+        }));
+      // Only count starters' points in total
+      const totalPts = Math.round(pEntries.reduce((s, e) => {
+        const lineup = lineupByRound[e.round_id];
+        if (!lineup?.submitted || lineup.starters.has(p.id)) return s + e.points;
+        return s;
+      }, 0) * 10) / 10;
       return { ...p, round_stats: pEntries, total_points: totalPts };
     }).sort((a, b) => b.total_points - a.total_points);
 
+    // Round-level lineup summary for the UI
+    const roundLineups = rounds.map(r => ({
+      round_id: r.id,
+      round_name: r.name,
+      round_number: r.round_number,
+      status: r.status,
+      submitted: !!lineupByRound[r.id]?.submitted,
+      starter_count: lineupByRound[r.id] ? lineupByRound[r.id].starters.size : 0
+    }));
+
     const { commissioner_token, ...leaguePublic } = league;
-    res.json({ league: leaguePublic, team, players: playerData, rounds });
+    res.json({ league: leaguePublic, team, players: playerData, rounds: roundLineups });
+  } catch (err) { console.error(err); res.status(500).json({ error: err.message }); }
+});
+
+app.get('/api/leagues/:id/rounds/:roundId/lineup/:teamId', async (req, res) => {
+  try {
+    const rows = await db.all(
+      'SELECT player_id, is_starter FROM lineups WHERE round_id = $1 AND team_id = $2 AND league_id = $3',
+      [req.params.roundId, req.params.teamId, req.params.id]
+    );
+    res.json({
+      submitted: rows.length > 0,
+      starters: rows.filter(r => r.is_starter).map(r => r.player_id),
+      bench: rows.filter(r => !r.is_starter).map(r => r.player_id)
+    });
+  } catch (err) { console.error(err); res.status(500).json({ error: err.message }); }
+});
+
+app.post('/api/leagues/:id/rounds/:roundId/lineup', async (req, res) => {
+  try {
+    const { league, error, status } = await getLeagueWithAuth(req.params.id, null);
+    if (error) return res.status(status).json({ error });
+
+    const round = await db.get('SELECT * FROM rounds WHERE id = $1 AND league_id = $2',
+      [req.params.roundId, req.params.id]);
+    if (!round) return res.status(404).json({ error: 'Round not found' });
+    if (round.status === 'completed') return res.status(400).json({ error: 'Round is completed — lineup locked' });
+
+    const { team_token, starter_ids } = req.body;
+    if (!team_token || !Array.isArray(starter_ids))
+      return res.status(400).json({ error: 'team_token and starter_ids required' });
+
+    const team = await db.get('SELECT * FROM teams WHERE draft_id = $1 AND token = $2',
+      [league.draft_id, team_token]);
+    if (!team) return res.status(403).json({ error: 'Invalid team token' });
+
+    const players = await db.all('SELECT id FROM players WHERE drafted_by = $1', [team.id]);
+    const playerIds = new Set(players.map(p => p.id));
+
+    const invalid = starter_ids.filter(id => !playerIds.has(id));
+    if (invalid.length) return res.status(400).json({ error: 'Some starter IDs not in your squad' });
+
+    const maxStarters = league.starting_size || 11;
+    if (starter_ids.length > maxStarters)
+      return res.status(400).json({ error: `Max ${maxStarters} starters allowed` });
+
+    const starterSet = new Set(starter_ids);
+    await db.transaction(async (client) => {
+      await client.query('DELETE FROM lineups WHERE round_id = $1 AND team_id = $2 AND league_id = $3',
+        [req.params.roundId, team.id, req.params.id]);
+      for (const player of players) {
+        await client.query(
+          'INSERT INTO lineups (id, league_id, round_id, team_id, player_id, is_starter) VALUES ($1,$2,$3,$4,$5,$6)',
+          [randomUUID(), req.params.id, req.params.roundId, team.id, player.id, starterSet.has(player.id)]
+        );
+      }
+    });
+
+    res.json({ success: true, starters: starter_ids.length, bench: players.length - starter_ids.length });
   } catch (err) { console.error(err); res.status(500).json({ error: err.message }); }
 });
 
