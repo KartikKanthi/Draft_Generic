@@ -24,6 +24,8 @@
       <button class="tab-btn active" data-tab="standings">Standings</button>
       <button class="tab-btn" data-tab="rounds">Rounds</button>
       <button class="tab-btn" data-tab="my-team">My Team</button>
+      <button class="tab-btn" data-tab="trades">Trades</button>
+      <button class="tab-btn" data-tab="waivers">Waivers</button>
     </div>
 
     <!-- Standings -->
@@ -45,6 +47,16 @@
         <div id="team-selector" style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:16px"></div>
         <div id="team-detail"></div>
       </div>
+    </div>
+
+    <!-- Trades -->
+    <div class="tab-panel" id="tab-trades">
+      <div id="trades-container"></div>
+    </div>
+
+    <!-- Waivers -->
+    <div class="tab-panel" id="tab-waivers">
+      <div id="waivers-container"></div>
     </div>
   </div>
 
@@ -79,6 +91,61 @@
       <div class="modal-actions">
         <button class="btn" id="round-cancel-btn">Cancel</button>
         <button class="btn btn-primary" id="round-confirm-btn">Create Round</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Trade Proposal Modal -->
+  <div class="modal-overlay" id="trade-modal" style="display:none">
+    <div class="modal" style="min-width:360px;max-width:640px;width:90vw">
+      <h3>Propose Trade</h3>
+      <div style="margin-top:14px;display:flex;flex-direction:column;gap:12px">
+        <div class="form-group">
+          <label>Trade With</label>
+          <select id="trade-team-select" style="width:100%;padding:6px 10px;background:var(--surface-2);border:1px solid var(--border);border-radius:6px;color:var(--text)">
+            <option value="">Select a team…</option>
+          </select>
+        </div>
+        <div id="trade-player-section" style="display:none;flex-direction:column;gap:12px">
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+            <div>
+              <div style="font-size:12px;color:var(--text-muted);margin-bottom:6px;text-transform:uppercase;letter-spacing:.05em">You Offer</div>
+              <div id="trade-offer-list" style="display:flex;flex-direction:column;gap:4px;max-height:220px;overflow-y:auto"></div>
+            </div>
+            <div>
+              <div style="font-size:12px;color:var(--text-muted);margin-bottom:6px;text-transform:uppercase;letter-spacing:.05em">You Want</div>
+              <div id="trade-request-list" style="display:flex;flex-direction:column;gap:4px;max-height:220px;overflow-y:auto"></div>
+            </div>
+          </div>
+          <div class="form-group" style="margin:0">
+            <label style="font-size:13px">Note (optional)</label>
+            <input type="text" id="trade-note-input" placeholder="Add a message…">
+          </div>
+        </div>
+      </div>
+      <div class="modal-actions">
+        <button class="btn" id="trade-cancel-btn">Cancel</button>
+        <button class="btn btn-primary" id="trade-submit-btn" disabled>Propose Trade</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Waiver Claim Modal -->
+  <div class="modal-overlay" id="waiver-modal" style="display:none">
+    <div class="modal" style="min-width:320px;max-width:480px">
+      <h3>Claim Player</h3>
+      <div style="margin-top:14px;display:flex;flex-direction:column;gap:12px">
+        <div id="waiver-claim-player-info" style="padding:10px 14px;background:var(--surface-2);border-radius:6px;border:1px solid var(--border)"></div>
+        <div class="form-group" style="margin:0">
+          <label>Drop Player (optional)</label>
+          <select id="waiver-drop-select" style="width:100%;padding:6px 10px;background:var(--surface-2);border:1px solid var(--border);border-radius:6px;color:var(--text)">
+            <option value="">None — keep full squad</option>
+          </select>
+        </div>
+      </div>
+      <div class="modal-actions">
+        <button class="btn" id="waiver-cancel-btn">Cancel</button>
+        <button class="btn btn-primary" id="waiver-submit-btn">Submit Claim</button>
       </div>
     </div>
   </div>

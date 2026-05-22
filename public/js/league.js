@@ -11,6 +11,13 @@ let lineupRoundId = null;
 let lineupSquad = [];
 let lineupStarters = new Set();
 let lineupMaxStarters = 11;
+let tradeOpponentId = null;
+let tradeOpponentSquad = [];
+let myTradeSquad = [];
+let tradeOfferedIds = new Set();
+let tradeRequestedIds = new Set();
+let waiverData = null;
+let waiverClaimPlayerId = null;
 
 function escHtml(s) {
   return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
@@ -33,6 +40,8 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
     btn.classList.add('active');
     document.getElementById(`tab-${btn.dataset.tab}`).classList.add('active');
     if (btn.dataset.tab === 'my-team') renderMyTeam();
+    if (btn.dataset.tab === 'trades') renderTrades();
+    if (btn.dataset.tab === 'waivers') renderWaivers();
   });
 });
 
@@ -395,6 +404,379 @@ document.getElementById('round-confirm-btn').addEventListener('click', async () 
 
 document.getElementById('settings-btn').addEventListener('click', () => {
   location.href = `/league-setup.html?draft_id=${state.draft_id}&edit=${LEAGUE_ID}`;
+});
+
+// ── Trades ────────────────────────────────────────────────────────────────────
+
+async function renderTrades() {
+  const el = document.getElementById('trades-container');
+  el.innerHTML = '<div style="color:var(--text-muted);padding:16px;text-align:center">Loading…</div>';
+
+  const res = await fetch(`/api/leagues/${LEAGUE_ID}/trades`);
+  if (!res.ok) { el.innerHTML = '<div style="color:var(--danger);padding:16px">Failed to load trades</div>'; return; }
+  const { trades } = await res.json();
+
+  const parts = [];
+  if (MY_TEAM_TOKEN) {
+    parts.push(`<div style="margin-bottom:16px;display:flex;justify-content:flex-end">
+      <button class="btn btn-primary" id="propose-trade-btn">+ Propose Trade</button>
+    </div>`);
+  }
+
+  const renderTradeCard = (t) => {
+    const isRecvTeam = t.receiving_team_id === MY_TEAM_ID;
+    const statusCls = { pending:'badge-warning', accepted:'badge-success', rejected:'badge-muted', executed:'badge-blue', vetoed:'badge-muted' }[t.status] || 'badge-muted';
+    const actions = [];
+    if (t.status === 'pending' && isRecvTeam && MY_TEAM_TOKEN) {
+      actions.push(`<button class="btn btn-sm btn-primary" onclick="respondTrade('${t.id}','accept')">Accept</button>`);
+      actions.push(`<button class="btn btn-sm" onclick="respondTrade('${t.id}','reject')">Reject</button>`);
+    }
+    if (t.status === 'accepted' && COMMISSIONER_TOKEN) {
+      actions.push(`<button class="btn btn-sm btn-primary" onclick="actTrade('${t.id}','execute')">Execute</button>`);
+      actions.push(`<button class="btn btn-sm" onclick="actTrade('${t.id}','veto')">Veto</button>`);
+    }
+    return `
+      <div class="round-card" style="flex-direction:column;align-items:stretch;gap:8px;margin-bottom:10px">
+        <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:6px">
+          <div style="font-size:13px">
+            <strong>${escHtml(t.proposing_team_name)}</strong>
+            <span style="color:var(--text-muted)"> ⇄ </span>
+            <strong>${escHtml(t.receiving_team_name)}</strong>
+          </div>
+          <div style="display:flex;align-items:center;gap:6px">
+            <span class="badge ${statusCls}">${t.status}</span>
+            ${actions.join('')}
+          </div>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;font-size:12px">
+          <div>
+            <div style="color:var(--text-muted);margin-bottom:3px">${escHtml(t.proposing_team_name)} gives:</div>
+            ${t.offered_players.length
+              ? t.offered_players.map(p => `<div>${escHtml(p.name)}${p.position ? ` <span style="color:var(--text-muted)">(${escHtml(p.position)})</span>` : ''}</div>`).join('')
+              : '<div style="color:var(--text-dim)">Nothing</div>'}
+          </div>
+          <div>
+            <div style="color:var(--text-muted);margin-bottom:3px">${escHtml(t.receiving_team_name)} gives:</div>
+            ${t.requested_players.length
+              ? t.requested_players.map(p => `<div>${escHtml(p.name)}${p.position ? ` <span style="color:var(--text-muted)">(${escHtml(p.position)})</span>` : ''}</div>`).join('')
+              : '<div style="color:var(--text-dim)">Nothing</div>'}
+          </div>
+        </div>
+        ${t.note ? `<div style="font-size:12px;color:var(--text-muted);font-style:italic">"${escHtml(t.note)}"</div>` : ''}
+      </div>
+    `;
+  };
+
+  const pending = trades.filter(t => t.status === 'pending');
+  const accepted = trades.filter(t => t.status === 'accepted');
+  const history = trades.filter(t => !['pending','accepted'].includes(t.status));
+
+  if (!trades.length) {
+    parts.push('<div style="color:var(--text-muted);padding:24px;text-align:center">No trades yet.</div>');
+  } else {
+    if (pending.length) {
+      parts.push('<h4 style="font-size:13px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:8px">Pending</h4>');
+      parts.push(pending.map(renderTradeCard).join(''));
+    }
+    if (accepted.length) {
+      parts.push('<h4 style="font-size:13px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:8px;margin-top:16px">Accepted — Awaiting Commissioner</h4>');
+      parts.push(accepted.map(renderTradeCard).join(''));
+    }
+    if (history.length) {
+      parts.push('<h4 style="font-size:13px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:8px;margin-top:16px">History</h4>');
+      parts.push(history.map(renderTradeCard).join(''));
+    }
+  }
+
+  el.innerHTML = parts.join('');
+  document.getElementById('propose-trade-btn')?.addEventListener('click', openTradeModal);
+}
+
+function openTradeModal() {
+  tradeOpponentId = null;
+  tradeOfferedIds = new Set();
+  tradeRequestedIds = new Set();
+  const sel = document.getElementById('trade-team-select');
+  sel.innerHTML = '<option value="">Select a team…</option>' +
+    state.standings
+      .filter(t => t.team_id !== MY_TEAM_ID)
+      .map(t => `<option value="${t.team_id}">${escHtml(t.team_name)}</option>`)
+      .join('');
+  document.getElementById('trade-player-section').style.display = 'none';
+  document.getElementById('trade-submit-btn').disabled = true;
+  document.getElementById('trade-note-input').value = '';
+  document.getElementById('trade-modal').style.display = 'flex';
+}
+
+async function loadTradeSquads(opponentId) {
+  tradeOpponentId = opponentId;
+  tradeOfferedIds = new Set();
+  tradeRequestedIds = new Set();
+  const [myRes, theirRes] = await Promise.all([
+    fetch(`/api/leagues/${LEAGUE_ID}/team/${MY_TEAM_ID}`),
+    fetch(`/api/leagues/${LEAGUE_ID}/team/${opponentId}`)
+  ]);
+  myTradeSquad = (await myRes.json()).players;
+  tradeOpponentSquad = (await theirRes.json()).players;
+  renderTradePlayerLists();
+  document.getElementById('trade-player-section').style.display = 'flex';
+  document.getElementById('trade-submit-btn').disabled = false;
+}
+
+function renderTradePlayerLists() {
+  document.getElementById('trade-offer-list').innerHTML =
+    myTradeSquad.map(p => {
+      const sel = tradeOfferedIds.has(p.id);
+      return `<div class="lineup-player-row ${sel ? 'is-starter' : 'is-bench'}" onclick="toggleTrade('${p.id}','offer')">
+        <div style="flex:1;font-size:13px"><strong>${escHtml(p.name)}</strong>${p.position ? ` <span style="color:var(--text-muted);font-size:11px">(${escHtml(p.position)})</span>` : ''}</div>
+        ${sel ? '<span class="badge badge-success" style="font-size:11px">✓</span>' : ''}
+      </div>`;
+    }).join('') || '<div style="color:var(--text-dim);font-size:13px;padding:8px">No players</div>';
+  document.getElementById('trade-request-list').innerHTML =
+    tradeOpponentSquad.map(p => {
+      const sel = tradeRequestedIds.has(p.id);
+      return `<div class="lineup-player-row ${sel ? 'is-starter' : 'is-bench'}" onclick="toggleTrade('${p.id}','request')">
+        <div style="flex:1;font-size:13px"><strong>${escHtml(p.name)}</strong>${p.position ? ` <span style="color:var(--text-muted);font-size:11px">(${escHtml(p.position)})</span>` : ''}</div>
+        ${sel ? '<span class="badge badge-success" style="font-size:11px">✓</span>' : ''}
+      </div>`;
+    }).join('') || '<div style="color:var(--text-dim);font-size:13px;padding:8px">No players</div>';
+}
+
+window.toggleTrade = (playerId, side) => {
+  const set = side === 'offer' ? tradeOfferedIds : tradeRequestedIds;
+  if (set.has(playerId)) set.delete(playerId); else set.add(playerId);
+  renderTradePlayerLists();
+};
+
+window.respondTrade = async (tradeId, action) => {
+  const res = await fetch(`/api/leagues/${LEAGUE_ID}/trades/${tradeId}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action, team_token: MY_TEAM_TOKEN })
+  });
+  const data = await res.json();
+  if (!res.ok) { toast(data.error, 'error'); return; }
+  toast(`Trade ${data.status}`, 'success');
+  renderTrades();
+};
+
+window.actTrade = async (tradeId, action) => {
+  const res = await fetch(`/api/leagues/${LEAGUE_ID}/trades/${tradeId}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json', 'x-commissioner-token': COMMISSIONER_TOKEN },
+    body: JSON.stringify({ action })
+  });
+  const data = await res.json();
+  if (!res.ok) { toast(data.error, 'error'); return; }
+  toast(`Trade ${data.status}`, 'success');
+  renderTrades();
+  if (action === 'execute') await load();
+};
+
+document.getElementById('trade-team-select').addEventListener('change', async (e) => {
+  if (!e.target.value) {
+    document.getElementById('trade-player-section').style.display = 'none';
+    document.getElementById('trade-submit-btn').disabled = true;
+    return;
+  }
+  await loadTradeSquads(e.target.value);
+});
+
+document.getElementById('trade-cancel-btn').addEventListener('click', () => {
+  document.getElementById('trade-modal').style.display = 'none';
+});
+
+document.getElementById('trade-submit-btn').addEventListener('click', async () => {
+  if (!tradeOpponentId) { toast('Select a team first', 'error'); return; }
+  const btn = document.getElementById('trade-submit-btn');
+  btn.disabled = true; btn.textContent = 'Sending…';
+  const res = await fetch(`/api/leagues/${LEAGUE_ID}/trades`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      team_token: MY_TEAM_TOKEN,
+      receiving_team_id: tradeOpponentId,
+      offered_player_ids: [...tradeOfferedIds],
+      requested_player_ids: [...tradeRequestedIds],
+      note: document.getElementById('trade-note-input').value.trim() || undefined
+    })
+  });
+  const data = await res.json();
+  btn.disabled = false; btn.textContent = 'Propose Trade';
+  if (!res.ok) { toast(data.error, 'error'); return; }
+  toast('Trade proposed!', 'success');
+  document.getElementById('trade-modal').style.display = 'none';
+  renderTrades();
+});
+
+// ── Waivers ───────────────────────────────────────────────────────────────────
+
+async function renderWaivers() {
+  const el = document.getElementById('waivers-container');
+  el.innerHTML = '<div style="color:var(--text-muted);padding:16px;text-align:center">Loading…</div>';
+
+  const res = await fetch(`/api/leagues/${LEAGUE_ID}/waivers`);
+  if (!res.ok) { el.innerHTML = '<div style="color:var(--danger);padding:16px">Failed to load waivers</div>'; return; }
+  waiverData = await res.json();
+  const { free_agents, pending_claims, waiver_order, teams } = waiverData;
+
+  const parts = [];
+
+  if (COMMISSIONER_TOKEN) {
+    const orderedTeams = waiver_order.map(id => teams.find(t => t.id === id)).filter(Boolean);
+    const unordered = teams.filter(t => !waiver_order.includes(t.id));
+    const display = [...orderedTeams, ...unordered];
+    parts.push(`
+      <div style="margin-bottom:20px">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
+          <h4 style="font-size:13px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.05em;margin:0">Waiver Priority</h4>
+          <button class="btn btn-sm btn-primary" id="process-waivers-btn">Process Waivers</button>
+        </div>
+        <div style="display:flex;flex-direction:column;gap:4px">
+          ${display.map((t, i) => `
+            <div style="display:flex;align-items:center;gap:8px;padding:7px 12px;background:var(--surface-2);border-radius:6px">
+              <span style="color:var(--text-muted);width:22px;text-align:right;font-size:13px">${i+1}.</span>
+              <span style="flex:1;font-size:13px">${escHtml(t.name)}</span>
+              <div style="display:flex;gap:4px">
+                ${i > 0 ? `<button class="btn btn-sm" style="padding:2px 8px;min-width:28px" onclick="moveWaiverPriority('${t.id}',-1)">↑</button>` : ''}
+                ${i < display.length-1 ? `<button class="btn btn-sm" style="padding:2px 8px;min-width:28px" onclick="moveWaiverPriority('${t.id}',1)">↓</button>` : ''}
+              </div>
+            </div>
+          `).join('')}
+        </div>
+        <p style="font-size:12px;color:var(--text-muted);margin-top:6px">Priority 1 = first pick when claims are processed.</p>
+      </div>
+    `);
+  }
+
+  const myClaims = MY_TEAM_ID ? pending_claims.filter(c => c.team_id === MY_TEAM_ID) : [];
+  const visibleClaims = COMMISSIONER_TOKEN ? pending_claims : myClaims;
+
+  if (visibleClaims.length) {
+    parts.push('<h4 style="font-size:13px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:8px">Pending Claims</h4>');
+    parts.push('<div style="display:flex;flex-direction:column;gap:6px;margin-bottom:20px">');
+    for (const c of visibleClaims) {
+      const canCancel = c.team_id === MY_TEAM_ID && MY_TEAM_TOKEN;
+      parts.push(`
+        <div class="round-card" style="padding:10px 14px">
+          <div style="flex:1;font-size:13px">
+            ${COMMISSIONER_TOKEN ? `<span style="color:var(--text-muted);margin-right:6px">${escHtml(c.team_name)}:</span>` : ''}
+            Claim <strong>${escHtml(c.claim_player_name)}</strong>
+            ${c.drop_player_name ? ` · Drop <strong>${escHtml(c.drop_player_name)}</strong>` : ''}
+          </div>
+          ${canCancel ? `<button class="btn btn-sm" onclick="cancelClaim('${c.id}')">Cancel</button>` : ''}
+        </div>
+      `);
+    }
+    parts.push('</div>');
+  }
+
+  parts.push('<h4 style="font-size:13px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:8px">Free Agents</h4>');
+  if (!free_agents.length) {
+    parts.push('<div style="color:var(--text-muted);padding:16px;text-align:center">No free agents available.</div>');
+  } else {
+    parts.push(`<div style="overflow-x:auto"><table class="league-table"><thead><tr>
+      <th>Player</th><th>Pos</th><th>Team</th>${MY_TEAM_TOKEN ? '<th></th>' : ''}
+    </tr></thead><tbody>`);
+    for (const p of free_agents) {
+      parts.push(`<tr>
+        <td><strong>${escHtml(p.name)}</strong></td>
+        <td style="color:var(--text-muted)">${escHtml(p.position || '—')}</td>
+        <td style="color:var(--text-muted)">${escHtml(p.team_affiliation || '—')}</td>
+        ${MY_TEAM_TOKEN ? `<td><button class="btn btn-sm btn-primary" onclick="openWaiverModal('${p.id}')">Claim</button></td>` : ''}
+      </tr>`);
+    }
+    parts.push('</tbody></table></div>');
+  }
+
+  el.innerHTML = parts.join('');
+  document.getElementById('process-waivers-btn')?.addEventListener('click', processWaivers);
+}
+
+window.openWaiverModal = async (playerId) => {
+  waiverClaimPlayerId = playerId;
+  const player = waiverData.free_agents.find(p => p.id === playerId);
+  document.getElementById('waiver-claim-player-info').innerHTML = `
+    <strong>${escHtml(player?.name || '')}</strong>
+    ${player?.position ? `<span style="color:var(--text-muted);margin-left:8px">${escHtml(player.position)}</span>` : ''}
+    ${player?.team_affiliation ? `<br><small style="color:var(--text-muted)">${escHtml(player.team_affiliation)}</small>` : ''}
+  `;
+  const res = await fetch(`/api/leagues/${LEAGUE_ID}/team/${MY_TEAM_ID}`);
+  const data = await res.json();
+  document.getElementById('waiver-drop-select').innerHTML =
+    '<option value="">None — keep full squad</option>' +
+    data.players.map(p => `<option value="${p.id}">${escHtml(p.name)}${p.position ? ` (${escHtml(p.position)})` : ''}</option>`).join('');
+  document.getElementById('waiver-modal').style.display = 'flex';
+};
+
+window.cancelClaim = async (claimId) => {
+  const res = await fetch(`/api/leagues/${LEAGUE_ID}/waivers/${claimId}`, {
+    method: 'DELETE',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ team_token: MY_TEAM_TOKEN })
+  });
+  const data = await res.json();
+  if (!res.ok) { toast(data.error, 'error'); return; }
+  toast('Claim cancelled', 'success');
+  renderWaivers();
+};
+
+async function processWaivers() {
+  if (!confirm('Process all pending waiver claims now? Claims will be granted in priority order.')) return;
+  const res = await fetch(`/api/leagues/${LEAGUE_ID}/waivers/process`, {
+    method: 'POST',
+    headers: { 'x-commissioner-token': COMMISSIONER_TOKEN }
+  });
+  const data = await res.json();
+  if (!res.ok) { toast(data.error, 'error'); return; }
+  toast(`Done — ${data.processed} approved, ${data.failed} rejected`, 'success');
+  renderWaivers();
+  await load();
+}
+
+window.moveWaiverPriority = async (teamId, direction) => {
+  const order = [...waiverData.waiver_order];
+  const idx = order.indexOf(teamId);
+  if (idx === -1) return;
+  const newIdx = idx + direction;
+  if (newIdx < 0 || newIdx >= order.length) return;
+  [order[idx], order[newIdx]] = [order[newIdx], order[idx]];
+  const res = await fetch(`/api/leagues/${LEAGUE_ID}/waivers/order`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json', 'x-commissioner-token': COMMISSIONER_TOKEN },
+    body: JSON.stringify({ waiver_order: order })
+  });
+  if (res.ok) {
+    waiverData.waiver_order = order;
+    renderWaivers();
+  } else {
+    toast('Failed to update waiver order', 'error');
+  }
+};
+
+document.getElementById('waiver-cancel-btn').addEventListener('click', () => {
+  document.getElementById('waiver-modal').style.display = 'none';
+});
+
+document.getElementById('waiver-submit-btn').addEventListener('click', async () => {
+  const drop = document.getElementById('waiver-drop-select').value;
+  const btn = document.getElementById('waiver-submit-btn');
+  btn.disabled = true; btn.textContent = 'Submitting…';
+  const res = await fetch(`/api/leagues/${LEAGUE_ID}/waivers`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      team_token: MY_TEAM_TOKEN,
+      claim_player_id: waiverClaimPlayerId,
+      drop_player_id: drop || undefined
+    })
+  });
+  const data = await res.json();
+  btn.disabled = false; btn.textContent = 'Submit Claim';
+  if (!res.ok) { toast(data.error, 'error'); return; }
+  toast('Claim submitted!', 'success');
+  document.getElementById('waiver-modal').style.display = 'none';
+  renderWaivers();
 });
 
 load();

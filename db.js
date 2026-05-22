@@ -118,6 +118,33 @@ await pool.query(`
   )
 `);
 
+await pool.query(`
+  CREATE TABLE IF NOT EXISTS trades (
+    id TEXT PRIMARY KEY,
+    league_id TEXT NOT NULL REFERENCES leagues(id),
+    proposing_team_id TEXT NOT NULL REFERENCES teams(id),
+    receiving_team_id TEXT NOT NULL REFERENCES teams(id),
+    offered_player_ids JSONB NOT NULL DEFAULT '[]',
+    requested_player_ids JSONB NOT NULL DEFAULT '[]',
+    status TEXT NOT NULL DEFAULT 'pending',
+    note TEXT,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+  )
+`);
+
+await pool.query(`
+  CREATE TABLE IF NOT EXISTS waiver_claims (
+    id TEXT PRIMARY KEY,
+    league_id TEXT NOT NULL REFERENCES leagues(id),
+    team_id TEXT NOT NULL REFERENCES teams(id),
+    claim_player_id TEXT NOT NULL REFERENCES players(id),
+    drop_player_id TEXT REFERENCES players(id),
+    status TEXT NOT NULL DEFAULT 'pending',
+    created_at TIMESTAMPTZ DEFAULT NOW()
+  )
+`);
+
 // Safe migrations for existing databases
 for (const sql of [
   'ALTER TABLE drafts ADD COLUMN IF NOT EXISTS position_requirements TEXT',
@@ -125,6 +152,7 @@ for (const sql of [
   'ALTER TABLE drafts ADD COLUMN IF NOT EXISTS nomination_paused_remaining_ms INTEGER',
   'ALTER TABLE players ADD COLUMN IF NOT EXISTS unsold INTEGER NOT NULL DEFAULT 0',
   'ALTER TABLE players ADD COLUMN IF NOT EXISTS sort_order INTEGER NOT NULL DEFAULT 0',
+  'ALTER TABLE leagues ADD COLUMN IF NOT EXISTS waiver_order JSONB',
 ]) {
   await pool.query(sql);
 }

@@ -723,6 +723,239 @@ app.post('/api/leagues/:id/rounds/:roundId/lineup', async (req, res) => {
   } catch (err) { console.error(err); res.status(500).json({ error: err.message }); }
 });
 
+// ── Trade Routes ─────────────────────────────────────────────────────────────
+
+async function enrichTrade(trade) {
+  const [propTeam, recvTeam] = await Promise.all([
+    db.get('SELECT id, name FROM teams WHERE id = $1', [trade.proposing_team_id]),
+    db.get('SELECT id, name FROM teams WHERE id = $1', [trade.receiving_team_id])
+  ]);
+  const allIds = [...(trade.offered_player_ids || []), ...(trade.requested_player_ids || [])];
+  const players = allIds.length
+    ? await db.all('SELECT id, name, position FROM players WHERE id = ANY($1)', [allIds])
+    : [];
+  const pMap = Object.fromEntries(players.map(p => [p.id, p]));
+  return {
+    ...trade,
+    proposing_team_name: propTeam?.name,
+    receiving_team_name: recvTeam?.name,
+    offered_players: (trade.offered_player_ids || []).map(id => pMap[id]).filter(Boolean),
+    requested_players: (trade.requested_player_ids || []).map(id => pMap[id]).filter(Boolean)
+  };
+}
+
+app.get('/api/leagues/:id/trades', async (req, res) => {
+  try {
+    const { league, error, status } = await getLeagueWithAuth(req.params.id, null);
+    if (error) return res.status(status).json({ error });
+    const trades = await db.all(
+      'SELECT * FROM trades WHERE league_id = $1 ORDER BY created_at DESC', [req.params.id]
+    );
+    const enriched = await Promise.all(trades.map(t => enrichTrade(t)));
+    res.json({ trades: enriched });
+  } catch (err) { console.error(err); res.status(500).json({ error: err.message }); }
+});
+
+app.post('/api/leagues/:id/trades', async (req, res) => {
+  try {
+    const { league, error, status } = await getLeagueWithAuth(req.params.id, null);
+    if (error) return res.status(status).json({ error });
+    const { team_token, receiving_team_id, offered_player_ids, requested_player_ids, note } = req.body;
+    if (!team_token || !receiving_team_id || !Array.isArray(offered_player_ids) || !Array.isArray(requested_player_ids))
+      return res.status(400).json({ error: 'team_token, receiving_team_id, offered_player_ids, requested_player_ids required' });
+    const propTeam = await db.get('SELECT * FROM teams WHERE draft_id = $1 AND token = $2', [league.draft_id, team_token]);
+    if (!propTeam) return res.status(403).json({ error: 'Invalid team token' });
+    if (propTeam.id === receiving_team_id) return res.status(400).json({ error: 'Cannot trade with yourself' });
+    if (offered_player_ids.length) {
+      const owned = await db.all('SELECT id FROM players WHERE id = ANY($1) AND drafted_by = $2', [offered_player_ids, propTeam.id]);
+      if (owned.length !== offered_player_ids.length)
+        return res.status(400).json({ error: 'Some offered players are not in your squad' });
+    }
+    if (requested_player_ids.length) {
+      const owned = await db.all('SELECT id FROM players WHERE id = ANY($1) AND drafted_by = $2', [requested_player_ids, receiving_team_id]);
+      if (owned.length !== requested_player_ids.length)
+        return res.status(400).json({ error: "Some requested players are not in that team's squad" });
+    }
+    const tradeId = randomUUID();
+    await db.run(`
+      INSERT INTO trades (id, league_id, proposing_team_id, receiving_team_id, offered_player_ids, requested_player_ids, note)
+      VALUES ($1,$2,$3,$4,$5,$6,$7)
+    `, [tradeId, req.params.id, propTeam.id, receiving_team_id,
+        JSON.stringify(offered_player_ids), JSON.stringify(requested_player_ids), note || null]);
+    res.json({ trade_id: tradeId });
+  } catch (err) { console.error(err); res.status(500).json({ error: err.message }); }
+});
+
+app.put('/api/leagues/:id/trades/:tradeId', async (req, res) => {
+  try {
+    const { action, team_token } = req.body;
+    const commToken = req.headers['x-commissioner-token'];
+    const authToken = (action === 'execute' || action === 'veto') ? commToken : null;
+    const { league, error, status } = await getLeagueWithAuth(req.params.id, authToken);
+    if (error) return res.status(status).json({ error });
+    const trade = await db.get('SELECT * FROM trades WHERE id = $1 AND league_id = $2',
+      [req.params.tradeId, req.params.id]);
+    if (!trade) return res.status(404).json({ error: 'Trade not found' });
+
+    if (action === 'accept' || action === 'reject') {
+      if (!team_token) return res.status(400).json({ error: 'team_token required' });
+      const team = await db.get('SELECT * FROM teams WHERE draft_id = $1 AND token = $2', [league.draft_id, team_token]);
+      if (!team || team.id !== trade.receiving_team_id)
+        return res.status(403).json({ error: 'Only the receiving team can accept or reject' });
+      if (trade.status !== 'pending') return res.status(400).json({ error: 'Trade is no longer pending' });
+      const newStatus = action === 'accept' ? 'accepted' : 'rejected';
+      await db.run('UPDATE trades SET status = $1, updated_at = NOW() WHERE id = $2', [newStatus, trade.id]);
+      return res.json({ success: true, status: newStatus });
+    }
+
+    if (action === 'execute' || action === 'veto') {
+      if (trade.status !== 'accepted') return res.status(400).json({ error: 'Trade must be accepted before executing' });
+      if (action === 'execute') {
+        await db.transaction(async (client) => {
+          for (const pid of (trade.offered_player_ids || []))
+            await client.query('UPDATE players SET drafted_by = $1 WHERE id = $2', [trade.receiving_team_id, pid]);
+          for (const pid of (trade.requested_player_ids || []))
+            await client.query('UPDATE players SET drafted_by = $1 WHERE id = $2', [trade.proposing_team_id, pid]);
+          await client.query('UPDATE trades SET status = $1, updated_at = NOW() WHERE id = $2', ['executed', trade.id]);
+        });
+      } else {
+        await db.run('UPDATE trades SET status = $1, updated_at = NOW() WHERE id = $2', ['vetoed', trade.id]);
+      }
+      return res.json({ success: true, status: action === 'execute' ? 'executed' : 'vetoed' });
+    }
+
+    return res.status(400).json({ error: 'Invalid action' });
+  } catch (err) { console.error(err); res.status(500).json({ error: err.message }); }
+});
+
+// ── Waiver Routes ─────────────────────────────────────────────────────────────
+
+app.get('/api/leagues/:id/waivers', async (req, res) => {
+  try {
+    const { league, error, status } = await getLeagueWithAuth(req.params.id, null);
+    if (error) return res.status(status).json({ error });
+    const freeAgents = await db.all(
+      'SELECT id, name, position, team_affiliation FROM players WHERE draft_id = $1 AND drafted_by IS NULL AND unsold = 0 ORDER BY LOWER(name)',
+      [league.draft_id]
+    );
+    const pendingClaims = await db.all(`
+      SELECT wc.*, t.name as team_name, cp.name as claim_player_name, dp.name as drop_player_name
+      FROM waiver_claims wc
+      JOIN teams t ON wc.team_id = t.id
+      JOIN players cp ON wc.claim_player_id = cp.id
+      LEFT JOIN players dp ON wc.drop_player_id = dp.id
+      WHERE wc.league_id = $1 AND wc.status = 'pending'
+      ORDER BY wc.created_at ASC
+    `, [req.params.id]);
+    const teams = await db.all('SELECT id, name FROM teams WHERE draft_id = $1 ORDER BY pick_order', [league.draft_id]);
+    const waiverOrder = league.waiver_order || teams.map(t => t.id);
+    res.json({ free_agents: freeAgents, pending_claims: pendingClaims, waiver_order: waiverOrder, teams });
+  } catch (err) { console.error(err); res.status(500).json({ error: err.message }); }
+});
+
+app.post('/api/leagues/:id/waivers', async (req, res) => {
+  try {
+    const { league, error, status } = await getLeagueWithAuth(req.params.id, null);
+    if (error) return res.status(status).json({ error });
+    const { team_token, claim_player_id, drop_player_id } = req.body;
+    if (!team_token || !claim_player_id) return res.status(400).json({ error: 'team_token and claim_player_id required' });
+    const team = await db.get('SELECT * FROM teams WHERE draft_id = $1 AND token = $2', [league.draft_id, team_token]);
+    if (!team) return res.status(403).json({ error: 'Invalid team token' });
+    const claimPlayer = await db.get(
+      'SELECT id FROM players WHERE id = $1 AND draft_id = $2 AND drafted_by IS NULL',
+      [claim_player_id, league.draft_id]
+    );
+    if (!claimPlayer) return res.status(400).json({ error: 'Player is not a free agent' });
+    if (drop_player_id) {
+      const dropPlayer = await db.get('SELECT id FROM players WHERE id = $1 AND drafted_by = $2', [drop_player_id, team.id]);
+      if (!dropPlayer) return res.status(400).json({ error: 'Drop player is not on your squad' });
+    }
+    const existing = await db.get(
+      "SELECT id FROM waiver_claims WHERE league_id = $1 AND team_id = $2 AND claim_player_id = $3 AND status = 'pending'",
+      [req.params.id, team.id, claim_player_id]
+    );
+    if (existing) return res.status(400).json({ error: 'You already have a pending claim on this player' });
+    const claimId = randomUUID();
+    await db.run(
+      'INSERT INTO waiver_claims (id, league_id, team_id, claim_player_id, drop_player_id) VALUES ($1,$2,$3,$4,$5)',
+      [claimId, req.params.id, team.id, claim_player_id, drop_player_id || null]
+    );
+    res.json({ claim_id: claimId });
+  } catch (err) { console.error(err); res.status(500).json({ error: err.message }); }
+});
+
+app.delete('/api/leagues/:id/waivers/:claimId', async (req, res) => {
+  try {
+    const { league, error, status } = await getLeagueWithAuth(req.params.id, null);
+    if (error) return res.status(status).json({ error });
+    const { team_token } = req.body;
+    if (!team_token) return res.status(400).json({ error: 'team_token required' });
+    const team = await db.get('SELECT * FROM teams WHERE draft_id = $1 AND token = $2', [league.draft_id, team_token]);
+    if (!team) return res.status(403).json({ error: 'Invalid team token' });
+    const claim = await db.get(
+      "SELECT id FROM waiver_claims WHERE id = $1 AND league_id = $2 AND team_id = $3 AND status = 'pending'",
+      [req.params.claimId, req.params.id, team.id]
+    );
+    if (!claim) return res.status(404).json({ error: 'Claim not found or already processed' });
+    await db.run('DELETE FROM waiver_claims WHERE id = $1', [req.params.claimId]);
+    res.json({ success: true });
+  } catch (err) { console.error(err); res.status(500).json({ error: err.message }); }
+});
+
+app.post('/api/leagues/:id/waivers/process', async (req, res) => {
+  try {
+    const commToken = req.headers['x-commissioner-token'];
+    const { league, error, status } = await getLeagueWithAuth(req.params.id, commToken);
+    if (error) return res.status(status).json({ error });
+    const claims = await db.all(
+      "SELECT * FROM waiver_claims WHERE league_id = $1 AND status = 'pending' ORDER BY created_at ASC",
+      [req.params.id]
+    );
+    const teams = await db.all('SELECT id FROM teams WHERE draft_id = $1', [league.draft_id]);
+    const waiverOrder = league.waiver_order || teams.map(t => t.id);
+    claims.sort((a, b) => {
+      const ai = waiverOrder.indexOf(a.team_id);
+      const bi = waiverOrder.indexOf(b.team_id);
+      return (ai === -1 ? 999 : ai) - (bi === -1 ? 999 : bi);
+    });
+    const claimedPlayers = new Set();
+    let processed = 0, failed = 0;
+    await db.transaction(async (client) => {
+      for (const claim of claims) {
+        const fa = await client.query(
+          'SELECT id FROM players WHERE id = $1 AND drafted_by IS NULL', [claim.claim_player_id]
+        );
+        if (!fa.rows.length || claimedPlayers.has(claim.claim_player_id)) {
+          await client.query("UPDATE waiver_claims SET status = 'rejected' WHERE id = $1", [claim.id]);
+          failed++;
+          continue;
+        }
+        await client.query('UPDATE players SET drafted_by = $1 WHERE id = $2', [claim.team_id, claim.claim_player_id]);
+        if (claim.drop_player_id) {
+          await client.query('UPDATE players SET drafted_by = NULL WHERE id = $1 AND drafted_by = $2',
+            [claim.drop_player_id, claim.team_id]);
+        }
+        await client.query("UPDATE waiver_claims SET status = 'processed' WHERE id = $1", [claim.id]);
+        claimedPlayers.add(claim.claim_player_id);
+        processed++;
+      }
+    });
+    res.json({ success: true, processed, failed });
+  } catch (err) { console.error(err); res.status(500).json({ error: err.message }); }
+});
+
+app.put('/api/leagues/:id/waivers/order', async (req, res) => {
+  try {
+    const commToken = req.headers['x-commissioner-token'];
+    const { league, error, status } = await getLeagueWithAuth(req.params.id, commToken);
+    if (error) return res.status(status).json({ error });
+    const { waiver_order } = req.body;
+    if (!Array.isArray(waiver_order)) return res.status(400).json({ error: 'waiver_order must be an array of team IDs' });
+    await db.run('UPDATE leagues SET waiver_order = $1 WHERE id = $2', [JSON.stringify(waiver_order), req.params.id]);
+    res.json({ success: true });
+  } catch (err) { console.error(err); res.status(500).json({ error: err.message }); }
+});
+
 // ── Socket.io ─────────────────────────────────────────────────────────────────
 
 io.on('connection', (socket) => {
