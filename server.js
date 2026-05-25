@@ -21,13 +21,14 @@ const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 
 
 const PgStore = connectPgSimple(session);
 
+app.set('trust proxy', 1);
 app.use(express.json());
 app.use(session({
   store: new PgStore({ pool, tableName: 'user_sessions', createTableIfMissing: true }),
   secret: process.env.SESSION_SECRET || 'dev-secret-change-in-prod',
   resave: false,
   saveUninitialized: false,
-  cookie: { secure: process.env.NODE_ENV === 'production', maxAge: 30 * 24 * 60 * 60 * 1000 }
+  cookie: { secure: process.env.NODE_ENV === 'production', sameSite: 'lax', maxAge: 30 * 24 * 60 * 60 * 1000 }
 }));
 app.use(passport.initialize());
 app.use(passport.session());
