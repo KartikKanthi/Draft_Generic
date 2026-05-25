@@ -22,6 +22,7 @@ await pool.query(`
     nomination_ends_at TEXT,
     commissioner_token TEXT NOT NULL,
     position_requirements TEXT,
+    picks_per_team INTEGER NOT NULL DEFAULT 0,
     auction_paused INTEGER NOT NULL DEFAULT 0,
     nomination_paused_remaining_ms INTEGER,
     created_at TIMESTAMPTZ DEFAULT NOW()
@@ -148,6 +149,7 @@ await pool.query(`
 // Safe migrations for existing databases
 for (const sql of [
   'ALTER TABLE drafts ADD COLUMN IF NOT EXISTS position_requirements TEXT',
+  'ALTER TABLE drafts ADD COLUMN IF NOT EXISTS picks_per_team INTEGER NOT NULL DEFAULT 0',
   'ALTER TABLE drafts ADD COLUMN IF NOT EXISTS auction_paused INTEGER NOT NULL DEFAULT 0',
   'ALTER TABLE drafts ADD COLUMN IF NOT EXISTS nomination_paused_remaining_ms INTEGER',
   'ALTER TABLE players ADD COLUMN IF NOT EXISTS unsold INTEGER NOT NULL DEFAULT 0',

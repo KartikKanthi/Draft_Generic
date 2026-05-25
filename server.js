@@ -145,9 +145,27 @@ async function processPick(draftId, playerId, teamToken, isAutoPick = false) {
     'SELECT COUNT(*) as c FROM players WHERE draft_id = $1 AND drafted_by IS NULL', [draftId]
   );
   const remaining = parseInt(countRow.c);
-  const nextPick = draft.current_pick + 1;
+  let nextPick = draft.current_pick + 1;
+  const picksPerTeam = draft.picks_per_team || 0;
 
-  if (remaining === 0) {
+  let draftDone = remaining === 0;
+
+  if (!draftDone && picksPerTeam > 0) {
+    const pickCounts = await db.all(
+      'SELECT drafted_by, COUNT(*) as c FROM players WHERE draft_id = $1 AND drafted_by IS NOT NULL GROUP BY drafted_by',
+      [draftId]
+    );
+    const countMap = Object.fromEntries(pickCounts.map(r => [r.drafted_by, parseInt(r.c)]));
+    if (teams.every(t => (countMap[t.id] || 0) >= picksPerTeam)) {
+      draftDone = true;
+    } else {
+      while ((countMap[teams[getTeamIndexForPick(nextPick, teams.length, draft.format)]?.id] || 0) >= picksPerTeam) {
+        nextPick++;
+      }
+    }
+  }
+
+  if (draftDone) {
     await db.run("UPDATE drafts SET status = 'completed', current_pick = $1 WHERE id = $2", [nextPick, draftId]);
     clearPickTimer(draftId);
   } else {
@@ -244,7 +262,19 @@ async function closeAuction(draftId) {
   const countRow = await db.get(
     'SELECT COUNT(*) as c FROM players WHERE draft_id = $1 AND drafted_by IS NULL AND unsold = 0', [draftId]
   );
-  if (parseInt(countRow.c) === 0) {
+  let auctionDone = parseInt(countRow.c) === 0;
+
+  if (!auctionDone && draft.picks_per_team > 0) {
+    const allTeams = await db.all('SELECT id FROM teams WHERE draft_id = $1', [draftId]);
+    const pickCounts = await db.all(
+      'SELECT drafted_by, COUNT(*) as c FROM players WHERE draft_id = $1 AND drafted_by IS NOT NULL GROUP BY drafted_by',
+      [draftId]
+    );
+    const countMap = Object.fromEntries(pickCounts.map(r => [r.drafted_by, parseInt(r.c)]));
+    if (allTeams.every(t => (countMap[t.id] || 0) >= draft.picks_per_team)) auctionDone = true;
+  }
+
+  if (auctionDone) {
     await db.run("UPDATE drafts SET status = 'completed' WHERE id = $1", [draftId]);
   }
 
@@ -261,7 +291,7 @@ async function closeAuction(draftId) {
 
 app.post('/api/drafts', upload.single('players_csv'), async (req, res) => {
   try {
-    const { name, format, mode, num_teams, pick_timer, auction_budget, position_requirements } = req.body;
+    const { name, format, mode, num_teams, pick_timer, auction_budget, position_requirements, picks_per_team } = req.body;
     if (!name?.trim() || !format || !mode || !num_teams)
       return res.status(400).json({ error: 'Missing required fields' });
 
@@ -274,11 +304,12 @@ app.post('/api/drafts', upload.single('players_csv'), async (req, res) => {
     const timer = Math.max(0, parseInt(pick_timer) || 90);
     const budget = Math.max(1, parseInt(auction_budget) || 200);
     const posReqs = position_requirements || null;
+    const ppt = Math.max(0, parseInt(picks_per_team) || 0);
 
     await db.run(`
-      INSERT INTO drafts (id, name, format, mode, num_teams, pick_timer, auction_budget, commissioner_token, position_requirements)
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-    `, [draftId, name.trim(), format, mode, numTeams, timer, budget, commissionerToken, posReqs]);
+      INSERT INTO drafts (id, name, format, mode, num_teams, pick_timer, auction_budget, commissioner_token, position_requirements, picks_per_team)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+    `, [draftId, name.trim(), format, mode, numTeams, timer, budget, commissionerToken, posReqs, ppt]);
 
     let playerCount = 0;
     if (req.file) {
@@ -1221,6 +1252,17 @@ io.on('connection', (socket) => {
     if (isNaN(bid) || bid < 1 || bid > team.budget) {
       socket.emit('error', { message: `Bid must be between $1 and $${team.budget}` });
       return;
+    }
+
+    if (draft.picks_per_team > 0) {
+      const teamPickCount = await db.get(
+        'SELECT COUNT(*) as c FROM players WHERE draft_id = $1 AND drafted_by = $2',
+        [draftId, team.id]
+      );
+      if (parseInt(teamPickCount.c) >= draft.picks_per_team) {
+        socket.emit('error', { message: 'Your squad is full' });
+        return;
+      }
     }
 
     const topRow = await db.get(

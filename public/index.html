@@ -49,6 +49,13 @@
             <label>Number of Teams <small style="color:var(--text-muted)">(2–32)</small></label>
             <input type="number" name="num_teams" min="2" max="32" value="10" required>
           </div>
+          <div class="form-group">
+            <label>Max players per team <small style="color:var(--text-muted)">(0 = no limit)</small></label>
+            <input type="number" name="picks_per_team" min="0" max="100" value="0">
+          </div>
+        </div>
+
+        <div class="form-row">
           <div class="form-group" id="timer-group">
             <label id="timer-label">Pick Timer (seconds, 0 = no limit)</label>
             <input type="number" name="pick_timer" min="0" max="3600" value="90">

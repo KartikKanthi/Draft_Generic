@@ -312,7 +312,10 @@ function renderPlayerPool(onClockTeam) {
     return true;
   });
 
-  const isMyTurn = onClockTeam?.id === MY_TEAM_ID;
+  const myTeamPickCount = state.players.filter(p => p.drafted_by === MY_TEAM_ID).length;
+  const pptPool = state.picks_per_team || 0;
+  const mySquadFull = pptPool > 0 && myTeamPickCount >= pptPool;
+  const isMyTurn = onClockTeam?.id === MY_TEAM_ID && !mySquadFull;
 
   const list = document.getElementById('player-list');
   list.innerHTML = filtered.map(p => {
@@ -522,10 +525,13 @@ function renderAuctionPanel() {
 
   renderAuctionBids();
 
-  // Show bid input if team member and has budget
+  // Show bid input if team member, has budget, and squad isn't full
   if (MY_TEAM_TOKEN) {
     const myTeam = state.teams.find(t => t.id === MY_TEAM_ID);
-    bidInputRow.style.display = myTeam && myTeam.budget > 0 ? 'flex' : 'none';
+    const myPicksCount = state.players.filter(p => p.drafted_by === MY_TEAM_ID).length;
+    const pptAuction = state.picks_per_team || 0;
+    const squadFull = pptAuction > 0 && myPicksCount >= pptAuction;
+    bidInputRow.style.display = myTeam && myTeam.budget > 0 && !squadFull ? 'flex' : 'none';
     const bidInput = document.getElementById('bid-amount');
     const topBid = (state.current_bids || []).length > 0 ? state.current_bids[0].amount : 0;
     const minBid = topBid + 1;
@@ -570,7 +576,12 @@ function renderMyTeam() {
   const myTeam = state.teams.find(t => t.id === MY_TEAM_ID);
   if (!myTeam) return;
 
-  myTeamNameEl.textContent = myTeam.name;
+  const myPicks = state.players
+    .filter(p => p.drafted_by === MY_TEAM_ID)
+    .sort((a, b) => a.pick_number - b.pick_number);
+  const ppt = state.picks_per_team || 0;
+  const squadLabel = ppt > 0 ? ` (${myPicks.length}/${ppt})` : '';
+  myTeamNameEl.textContent = myTeam.name + squadLabel;
 
   if (state.format === 'auction') {
     myBudgetEl.style.display = 'block';
@@ -580,9 +591,6 @@ function renderMyTeam() {
   }
 
   // Position requirements tracker
-  const myPicks = state.players
-    .filter(p => p.drafted_by === MY_TEAM_ID)
-    .sort((a, b) => a.pick_number - b.pick_number);
 
   const reqs = parseRequirements(state.position_requirements);
   if (reqs.length > 0) {
@@ -629,17 +637,21 @@ function renderAllTeams(onClockTeam) {
     const picks = state.players.filter(p => p.drafted_by === team.id).length;
     const isClock = team.id === onClockTeam?.id;
     const isMe = team.id === MY_TEAM_ID;
+    const ppt2 = state.picks_per_team || 0;
+    const isFull = ppt2 > 0 && picks >= ppt2;
     let cls = 'team-summary-item';
     if (isClock) cls += ' on-clock';
     if (isMe) cls += ' me';
 
+    const picksLabel = ppt2 > 0 ? `${picks}/${ppt2}` : `${picks} pick${picks !== 1 ? 's' : ''}`;
     return `<div class="${cls}">
       <div>
         <div style="font-weight:${isMe ? '700' : '400'}">${escHtml(team.name)}</div>
         ${isClock ? `<div class="on-clock-label">ON THE CLOCK</div>` : ''}
+        ${isFull ? `<div style="font-size:10px;color:var(--success);font-weight:600">FULL</div>` : ''}
       </div>
       <div style="text-align:right">
-        <div class="team-picks-count">${picks} pick${picks !== 1 ? 's' : ''}</div>
+        <div class="team-picks-count">${picksLabel}</div>
         ${state.format === 'auction' ? `<div class="team-budget">$${team.budget}</div>` : ''}
       </div>
     </div>`;
