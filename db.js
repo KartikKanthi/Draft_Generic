@@ -2,10 +2,21 @@ import pg from 'pg';
 
 const { Pool } = pg;
 
-const pool = new Pool({
+export const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false
 });
+
+await pool.query(`
+  CREATE TABLE IF NOT EXISTS users (
+    id TEXT PRIMARY KEY,
+    google_id TEXT NOT NULL UNIQUE,
+    email TEXT NOT NULL,
+    name TEXT NOT NULL,
+    avatar_url TEXT,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+  )
+`);
 
 await pool.query(`
   CREATE TABLE IF NOT EXISTS drafts (
@@ -21,6 +32,7 @@ await pool.query(`
     current_nomination TEXT,
     nomination_ends_at TEXT,
     commissioner_token TEXT NOT NULL,
+    owner_id TEXT REFERENCES users(id),
     position_requirements TEXT,
     picks_per_team INTEGER NOT NULL DEFAULT 0,
     auction_paused INTEGER NOT NULL DEFAULT 0,
@@ -148,6 +160,7 @@ await pool.query(`
 
 // Safe migrations for existing databases
 for (const sql of [
+  'ALTER TABLE drafts ADD COLUMN IF NOT EXISTS owner_id TEXT REFERENCES users(id)',
   'ALTER TABLE drafts ADD COLUMN IF NOT EXISTS position_requirements TEXT',
   'ALTER TABLE drafts ADD COLUMN IF NOT EXISTS picks_per_team INTEGER NOT NULL DEFAULT 0',
   'ALTER TABLE drafts ADD COLUMN IF NOT EXISTS auction_paused INTEGER NOT NULL DEFAULT 0',

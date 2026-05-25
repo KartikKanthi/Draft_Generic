@@ -1,3 +1,6 @@
+import { initAuth } from './auth.js';
+initAuth('auth-container');
+
 // ── Tab switching ─────────────────────────────────────────────────────────────
 document.querySelectorAll('.tab-btn').forEach(btn => {
   btn.addEventListener('click', () => {

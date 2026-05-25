@@ -1,3 +1,5 @@
+import { initAuth } from './auth.js';
+
 // ── State ─────────────────────────────────────────────────────────────────────
 const params = new URLSearchParams(location.search);
 const DRAFT_ID = params.get('id');
@@ -24,6 +26,20 @@ if (urlToken && !localStorage.getItem(`team_${DRAFT_ID}_token`)) {
 
 let MY_TEAM_ID = localStorage.getItem(`team_${DRAFT_ID}_id`);
 let MY_TEAM_TOKEN = localStorage.getItem(`team_${DRAFT_ID}_token`);
+
+// Auto-restore commissioner access for logged-in owners on any device
+if (!COMMISSIONER_TOKEN) {
+  fetch(`/api/drafts/${DRAFT_ID}/commissioner-token`)
+    .then(r => r.ok ? r.json() : null)
+    .then(data => {
+      if (data?.commissioner_token) {
+        localStorage.setItem(`commissioner_${DRAFT_ID}`, data.commissioner_token);
+        location.reload();
+      }
+    });
+}
+
+initAuth('auth-container');
 
 let state = null;
 let isCommissioner = !!COMMISSIONER_TOKEN;

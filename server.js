@@ -6,7 +6,11 @@ import { dirname, join } from 'path';
 import multer from 'multer';
 import { parse } from 'csv-parse/sync';
 import { randomUUID } from 'crypto';
-import db from './db.js';
+import session from 'express-session';
+import connectPgSimple from 'connect-pg-simple';
+import passport from 'passport';
+import { Strategy as GoogleStrategy } from 'passport-google-oauth20';
+import db, { pool } from './db.js';
 import { calculatePoints, SCORING_PRESETS } from './points.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -15,8 +19,82 @@ const httpServer = createServer(app);
 const io = new Server(httpServer);
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
 
+const PgStore = connectPgSimple(session);
+
 app.use(express.json());
+app.use(session({
+  store: new PgStore({ pool, tableName: 'user_sessions', createTableIfMissing: true }),
+  secret: process.env.SESSION_SECRET || 'dev-secret-change-in-prod',
+  resave: false,
+  saveUninitialized: false,
+  cookie: { secure: process.env.NODE_ENV === 'production', maxAge: 30 * 24 * 60 * 60 * 1000 }
+}));
+app.use(passport.initialize());
+app.use(passport.session());
 app.use(express.static(join(__dirname, 'public')));
+
+// ── Google OAuth ──────────────────────────────────────────────────────────────
+
+if (process.env.GOOGLE_CLIENT_ID) {
+  passport.use(new GoogleStrategy({
+    clientID: process.env.GOOGLE_CLIENT_ID,
+    clientSecret: process.env.GOOGLE_CLIENT_SECRET,
+    callbackURL: `${process.env.BASE_URL || 'http://localhost:3000'}/auth/google/callback`
+  }, async (accessToken, refreshToken, profile, done) => {
+    try {
+      let user = await db.get('SELECT * FROM users WHERE google_id = $1', [profile.id]);
+      if (!user) {
+        const id = randomUUID();
+        await db.run(
+          'INSERT INTO users (id, google_id, email, name, avatar_url) VALUES ($1, $2, $3, $4, $5)',
+          [id, profile.id, profile.emails[0].value, profile.displayName, profile.photos?.[0]?.value || null]
+        );
+        user = await db.get('SELECT * FROM users WHERE id = $1', [id]);
+      }
+      return done(null, user);
+    } catch (err) { return done(err); }
+  }));
+}
+
+passport.serializeUser((user, done) => done(null, user.id));
+passport.deserializeUser(async (id, done) => {
+  try {
+    const user = await db.get('SELECT * FROM users WHERE id = $1', [id]);
+    done(null, user || false);
+  } catch (err) { done(err); }
+});
+
+app.get('/auth/google', (req, res, next) => {
+  req.session.returnTo = req.headers.referer || '/';
+  passport.authenticate('google', { scope: ['profile', 'email'] })(req, res, next);
+});
+
+app.get('/auth/google/callback',
+  passport.authenticate('google', { failureRedirect: '/' }),
+  (req, res) => {
+    const redirect = req.session.returnTo || '/';
+    delete req.session.returnTo;
+    res.redirect(redirect);
+  }
+);
+
+app.get('/auth/logout', (req, res) => {
+  req.logout(() => res.redirect('/'));
+});
+
+app.get('/api/me', (req, res) => {
+  if (!req.user) return res.json({ user: null });
+  const { id, email, name, avatar_url } = req.user;
+  res.json({ user: { id, email, name, avatar_url } });
+});
+
+app.get('/api/drafts/:id/commissioner-token', async (req, res) => {
+  if (!req.user) return res.status(401).json({ error: 'Not logged in' });
+  const draft = await db.get('SELECT commissioner_token, owner_id FROM drafts WHERE id = $1', [req.params.id]);
+  if (!draft) return res.status(404).json({ error: 'Draft not found' });
+  if (draft.owner_id !== req.user.id) return res.status(403).json({ error: 'Not your draft' });
+  res.json({ commissioner_token: draft.commissioner_token });
+});
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -305,11 +383,12 @@ app.post('/api/drafts', upload.single('players_csv'), async (req, res) => {
     const budget = Math.max(1, parseInt(auction_budget) || 200);
     const posReqs = position_requirements || null;
     const ppt = Math.max(0, parseInt(picks_per_team) || 0);
+    const ownerId = req.user?.id || null;
 
     await db.run(`
-      INSERT INTO drafts (id, name, format, mode, num_teams, pick_timer, auction_budget, commissioner_token, position_requirements, picks_per_team)
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-    `, [draftId, name.trim(), format, mode, numTeams, timer, budget, commissionerToken, posReqs, ppt]);
+      INSERT INTO drafts (id, name, format, mode, num_teams, pick_timer, auction_budget, commissioner_token, position_requirements, picks_per_team, owner_id)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+    `, [draftId, name.trim(), format, mode, numTeams, timer, budget, commissionerToken, posReqs, ppt, ownerId]);
 
     let playerCount = 0;
     if (req.file) {
