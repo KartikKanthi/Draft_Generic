@@ -361,7 +361,10 @@ function renderDraftBoard(onClockTeam) {
   const maxRound = picks.length > 0
     ? Math.floor(Math.max(...picks.map(p => p.pick_number)) / numTeams) + 1
     : 1;
-  const totalRounds = Math.max(maxRound, Math.ceil(players.length / numTeams));
+  const pptBoard = state.picks_per_team || 0;
+  const totalRounds = pptBoard > 0
+    ? pptBoard
+    : Math.max(maxRound, Math.ceil(players.length / numTeams));
 
   if (boardView === 'list') {
     renderBoardList(picks, teams);
@@ -938,13 +941,15 @@ function setStatusBadge() {
 function updatePickCounter() {
   const el = document.getElementById('pick-counter');
   if (state.status === 'active' && state.format !== 'auction') {
-    const total = state.players.length;
+    const ppt = state.picks_per_team || 0;
+    const total = ppt > 0 ? state.teams.length * ppt : state.players.length;
     el.textContent = `Pick ${state.current_pick + 1} of ${total}`;
   } else if (state.status === 'active' && state.format === 'auction') {
     const drafted = state.players.filter(p => p.drafted_by).length;
     const unsold = state.players.filter(p => p.unsold).length;
-    const total = state.players.length - unsold;
-    el.textContent = `${drafted} / ${total} players auctioned${unsold ? ` · ${unsold} unsold` : ''}`;
+    const ppt = state.picks_per_team || 0;
+    const total = ppt > 0 ? state.teams.length * ppt : state.players.length - unsold;
+    el.textContent = `${drafted} / ${total} players${unsold ? ` · ${unsold} unsold` : ''}`;
   } else {
     el.textContent = '';
   }
