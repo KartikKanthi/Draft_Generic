@@ -151,7 +151,7 @@ async function getDraftState(draftId) {
   if (!draft) return null;
   const teams = await db.all('SELECT * FROM teams WHERE draft_id = $1 ORDER BY pick_order', [draftId]);
   const players = await db.all(
-    'SELECT * FROM players WHERE draft_id = $1 ORDER BY LOWER(name)', [draftId]
+    'SELECT * FROM players WHERE draft_id = $1 ORDER BY sort_order, LOWER(name)', [draftId]
   );
   const { commissioner_token, ...draftPublic } = draft;
 
@@ -197,10 +197,11 @@ async function bulkInsertPlayers(draftId, records) {
       const lc = Object.fromEntries(Object.entries(row).map(([k, v]) => [k.toLowerCase().trim(), v]));
       const name = lc.name || lc.player || lc['player name'] || lc['player_name'];
       if (!name?.trim()) continue;
-      const { name: _a, player: _b, position, pos, team, team_affiliation, ...rest } = lc;
+      const { name: _a, player: _b, position, pos, team, team_affiliation, country, nation, nationality, ...rest } = lc;
       await client.query(
-        'INSERT INTO players (id, draft_id, name, position, team_affiliation, metadata, sort_order) VALUES ($1, $2, $3, $4, $5, $6, $7)',
+        'INSERT INTO players (id, draft_id, name, position, team_affiliation, country, metadata, sort_order) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)',
         [randomUUID(), draftId, name.trim(), position || pos || null, team || team_affiliation || null,
+         country || nation || nationality || null,
          Object.keys(rest).length ? JSON.stringify(rest) : null, sortOrder++]
       );
       count++;

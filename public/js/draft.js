@@ -386,11 +386,12 @@ function renderPlayerPool(onClockTeam) {
 
     const extras = Object.entries(p.metadata || {}).map(([k, v]) => `${k}: ${v}`).join(' · ');
 
+    const subtitle = [p.country, p.team_affiliation].filter(Boolean).join(' · ');
     return `<div class="${cls}" data-id="${p.id}" title="${escHtml(extras)}">
       <span class="pos-badge">${escHtml(p.position || '—')}</span>
       <div class="player-info">
         <div class="player-name">${escHtml(p.name)}</div>
-        ${p.team_affiliation ? `<div class="player-team">${escHtml(p.team_affiliation)}</div>` : ''}
+        ${subtitle ? `<div class="player-team">${escHtml(subtitle)}</div>` : ''}
       </div>
     </div>`;
   }).join('') || `<div style="padding:20px;text-align:center;color:var(--text-muted)">No players found</div>`;
@@ -576,6 +577,7 @@ function renderAuctionPanel() {
       <div class="player-name-big">${escHtml(player.name)}</div>
       <div class="player-details">
         ${player.position ? `Position: ${escHtml(player.position)}` : ''}
+        ${player.country ? ` · ${escHtml(player.country)}` : ''}
         ${player.team_affiliation ? ` · ${escHtml(player.team_affiliation)}` : ''}
         ${state.auction_paused ? '<span style="color:var(--warning);margin-left:8px">⏸ Paused</span>' : ''}
       </div>`;
