@@ -12,7 +12,7 @@ import passport from 'passport';
 import { Strategy as GoogleStrategy } from 'passport-google-oauth20';
 import db, { pool } from './db.js';
 import { calculatePoints, SCORING_PRESETS } from './points.js';
-import { sendPickNotification, sendDraftStartedNotification } from './email.js';
+import { sendPickNotification, sendDraftStartedNotification, sendTestEmail } from './email.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -106,6 +106,13 @@ app.get('/api/drafts/:id/my-team', async (req, res) => {
   );
   if (!team) return res.status(404).json({ error: 'No team found' });
   res.json({ team_id: team.id, token: team.token });
+});
+
+app.post('/api/test-email', async (req, res) => {
+  const { to } = req.body;
+  if (!to) return res.status(400).json({ error: 'to address required' });
+  const result = await sendTestEmail(to);
+  res.status(result.ok ? 200 : 500).json(result);
 });
 
 app.get('/api/my-drafts', async (req, res) => {

@@ -3,7 +3,10 @@ import nodemailer from 'nodemailer';
 function createTransport() {
   const user = process.env.SMTP_USER || process.env.EMAIL_USER;
   const pass = process.env.SMTP_PASS || process.env.EMAIL_PASS;
-  if (!user || !pass) return null;
+  if (!user || !pass) {
+    console.warn('[email] No SMTP credentials configured — notifications disabled');
+    return null;
+  }
 
   return nodemailer.createTransport({
     host: process.env.SMTP_HOST || 'smtp.gmail.com',
@@ -11,6 +14,33 @@ function createTransport() {
     secure: process.env.SMTP_PORT === '465',
     auth: { user, pass },
   });
+}
+
+export async function sendTestEmail(to) {
+  const transport = createTransport();
+  if (!transport) return { ok: false, error: 'No SMTP credentials configured (set EMAIL_USER and EMAIL_PASS)' };
+
+  try {
+    await transport.verify();
+  } catch (err) {
+    return { ok: false, error: `SMTP connection failed: ${err.message}` };
+  }
+
+  const from = process.env.EMAIL_FROM || process.env.SMTP_USER || process.env.EMAIL_USER;
+  try {
+    await transport.sendMail({
+      from,
+      to,
+      subject: '✅ Fantasy Draft — email test',
+      text: 'Your email notifications are working correctly.',
+      html: `<div style="font-family:sans-serif;padding:24px"><h2 style="color:#4F8EF7">✅ Email is working!</h2><p>Your Fantasy Draft notification emails are configured correctly.</p></div>`,
+    });
+    console.log(`[email] Test email sent to ${to}`);
+    return { ok: true };
+  } catch (err) {
+    console.error('[email] Test email failed:', err.message);
+    return { ok: false, error: err.message };
+  }
 }
 
 export async function sendPickNotification({ teamName, email, draftName, draftId, teamToken, deadlineHours, round, pickInRound }) {
