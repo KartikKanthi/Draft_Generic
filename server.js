@@ -108,6 +108,35 @@ app.get('/api/drafts/:id/my-team', async (req, res) => {
   res.json({ team_id: team.id, token: team.token });
 });
 
+app.get('/api/my-drafts', async (req, res) => {
+  if (!req.user) return res.json({ commissioner_drafts: [], team_drafts: [] });
+
+  const [commDrafts, teamRows] = await Promise.all([
+    db.all('SELECT id FROM drafts WHERE owner_id = $1 ORDER BY created_at DESC', [req.user.id]),
+    db.all('SELECT t.id AS team_id, t.token AS team_token, t.name AS team_name, t.draft_id FROM teams t WHERE t.owner_id = $1', [req.user.id])
+  ]);
+
+  const commIds = new Set(commDrafts.map(d => d.id));
+
+  const [commStates, teamStates] = await Promise.all([
+    Promise.all(commDrafts.map(d => getDraftState(d.id))),
+    Promise.all(
+      teamRows
+        .filter(t => !commIds.has(t.draft_id))
+        .map(async t => {
+          const state = await getDraftState(t.draft_id);
+          if (!state) return null;
+          return { ...state, my_team_id: t.team_id, my_team_token: t.team_token, my_team_name: t.team_name };
+        })
+    )
+  ]);
+
+  res.json({
+    commissioner_drafts: commStates.filter(Boolean),
+    team_drafts: teamStates.filter(Boolean)
+  });
+});
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 async function getDraftState(draftId) {
