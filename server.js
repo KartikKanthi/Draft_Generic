@@ -12,6 +12,7 @@ import passport from 'passport';
 import { Strategy as GoogleStrategy } from 'passport-google-oauth20';
 import db, { pool } from './db.js';
 import { calculatePoints, SCORING_PRESETS } from './points.js';
+import { sendPickNotification, sendDraftStartedNotification } from './email.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -123,7 +124,8 @@ async function getDraftState(draftId) {
     ...draftPublic,
     teams,
     players: players.map(p => ({ ...p, metadata: p.metadata ? JSON.parse(p.metadata) : {} })),
-    current_bids: currentBids
+    current_bids: currentBids,
+    is_slow_draft: draft.mode === 'async' && draft.pick_timer > 0
   };
 }
 
@@ -188,7 +190,61 @@ async function startPickTimer(draftId, endsAtOverride = null) {
 
 function clearPickTimer(draftId) {
   const entry = activeTimers.get(draftId);
-  if (entry) { clearInterval(entry.interval); activeTimers.delete(draftId); }
+  if (entry) {
+    if (entry.interval) clearInterval(entry.interval);
+    if (entry.timeout) clearTimeout(entry.timeout);
+    activeTimers.delete(draftId);
+  }
+}
+
+// ── Slow Draft Deadline ───────────────────────────────────────────────────────
+
+async function startSlowPickDeadline(draftId) {
+  clearPickTimer(draftId);
+  const draft = await db.get('SELECT * FROM drafts WHERE id = $1', [draftId]);
+  if (!draft || draft.status !== 'active' || !draft.pick_deadline) return;
+
+  const endsAt = new Date(draft.pick_deadline).getTime();
+  const delay = Math.max(0, endsAt - Date.now());
+
+  const timeout = setTimeout(async () => {
+    activeTimers.delete(draftId);
+    const d = await db.get('SELECT * FROM drafts WHERE id = $1', [draftId]);
+    if (d?.status === 'active' && d.mode === 'async') {
+      await autoPick(draftId);
+    }
+  }, delay);
+
+  activeTimers.set(draftId, { timeout, endsAt });
+}
+
+async function setSlowPickDeadlineAndNotify(draftId, nextPickNumber) {
+  const draft = await db.get('SELECT * FROM drafts WHERE id = $1', [draftId]);
+  if (!draft || draft.pick_timer === 0) return;
+
+  const deadlineMs = Date.now() + draft.pick_timer * 60 * 60 * 1000;
+  const deadline = new Date(deadlineMs).toISOString();
+  await db.run('UPDATE drafts SET pick_deadline = $1 WHERE id = $2', [deadline, draftId]);
+
+  startSlowPickDeadline(draftId);
+
+  const teams = await db.all('SELECT * FROM teams WHERE draft_id = $1 ORDER BY pick_order', [draftId]);
+  const nextIdx = getTeamIndexForPick(nextPickNumber, teams.length, draft.format);
+  const nextTeam = teams[nextIdx];
+  if (nextTeam?.email) {
+    const round = Math.floor(nextPickNumber / teams.length) + 1;
+    const pickInRound = (nextPickNumber % teams.length) + 1;
+    sendPickNotification({
+      teamName: nextTeam.name,
+      email: nextTeam.email,
+      draftName: draft.name,
+      draftId,
+      teamToken: nextTeam.token,
+      deadlineHours: draft.pick_timer,
+      round,
+      pickInRound,
+    });
+  }
 }
 
 async function autoPick(draftId) {
@@ -245,11 +301,12 @@ async function processPick(draftId, playerId, teamToken, isAutoPick = false) {
   }
 
   if (draftDone) {
-    await db.run("UPDATE drafts SET status = 'completed', current_pick = $1 WHERE id = $2", [nextPick, draftId]);
+    await db.run("UPDATE drafts SET status = 'completed', current_pick = $1, pick_deadline = NULL WHERE id = $2", [nextPick, draftId]);
     clearPickTimer(draftId);
   } else {
     await db.run('UPDATE drafts SET current_pick = $1 WHERE id = $2', [nextPick, draftId]);
     if (draft.mode === 'live') await startPickTimer(draftId);
+    else if (draft.mode === 'async' && draft.pick_timer > 0) await setSlowPickDeadlineAndNotify(draftId, nextPick);
   }
 
   const state = await getDraftState(draftId);
@@ -458,7 +515,7 @@ app.delete('/api/drafts/:id', async (req, res) => {
 });
 
 app.post('/api/drafts/:id/join', async (req, res) => {
-  const { team_name } = req.body;
+  const { team_name, email } = req.body;
   if (!team_name?.trim()) return res.status(400).json({ error: 'team_name required' });
 
   const draft = await db.get('SELECT * FROM drafts WHERE id = $1', [req.params.id]);
@@ -471,15 +528,26 @@ app.post('/api/drafts/:id/join', async (req, res) => {
 
   const teamId = randomUUID();
   const token = randomUUID();
+  const teamEmail = email?.trim() || null;
   await db.run(
-    'INSERT INTO teams (id, draft_id, name, token, pick_order, budget) VALUES ($1, $2, $3, $4, $5, $6)',
-    [teamId, req.params.id, team_name.trim(), token, teamCount, draft.auction_budget]
+    'INSERT INTO teams (id, draft_id, name, token, pick_order, budget, email) VALUES ($1, $2, $3, $4, $5, $6, $7)',
+    [teamId, req.params.id, team_name.trim(), token, teamCount, draft.auction_budget, teamEmail]
   );
 
   const state = await getDraftState(req.params.id);
   io.to(`draft:${req.params.id}`).emit('draft-state', state);
 
   res.json({ team_id: teamId, token, pick_order: teamCount });
+});
+
+app.put('/api/drafts/:id/teams/:teamId/email', async (req, res) => {
+  const { token, email } = req.body;
+  if (!token) return res.status(400).json({ error: 'token required' });
+  const team = await db.get('SELECT * FROM teams WHERE id = $1 AND draft_id = $2 AND token = $3',
+    [req.params.teamId, req.params.id, token]);
+  if (!team) return res.status(403).json({ error: 'Invalid team token' });
+  await db.run('UPDATE teams SET email = $1 WHERE id = $2', [email?.trim() || null, req.params.teamId]);
+  res.json({ success: true });
 });
 
 // ── League Helpers ────────────────────────────────────────────────────────────
@@ -1282,8 +1350,31 @@ io.on('connection', (socket) => {
     io.to(`draft:${draftId}`).emit('draft-state', state);
     io.to(`draft:${draftId}`).emit('draft-started', {});
 
-    if (draft.format !== 'auction' && draft.mode === 'live') await startPickTimer(draftId);
-    else if (draft.format === 'auction') await autoNominateNext(draftId);
+    if (draft.format !== 'auction' && draft.mode === 'live') {
+      await startPickTimer(draftId);
+    } else if (draft.format === 'auction') {
+      await autoNominateNext(draftId);
+    } else if (draft.format !== 'auction' && draft.mode === 'async' && draft.pick_timer > 0) {
+      // Slow draft: set first deadline and notify all teams
+      const updatedTeams = await db.all('SELECT * FROM teams WHERE draft_id = $1 ORDER BY pick_order', [draftId]);
+      await setSlowPickDeadlineAndNotify(draftId, 0);
+
+      // Notify all non-first teams that draft has started (first team already got a pick notification)
+      const firstIdx = getTeamIndexForPick(0, updatedTeams.length, draft.format);
+      for (let i = 0; i < updatedTeams.length; i++) {
+        const t = updatedTeams[i];
+        if (!t.email || i === firstIdx) continue;
+        sendDraftStartedNotification({
+          teamName: t.name,
+          email: t.email,
+          draftName: draft.name,
+          draftId,
+          teamToken: t.token,
+          deadlineHours: 0,
+          isFirst: false,
+        });
+      }
+    }
   });
 
   socket.on('make-pick', async ({ teamToken, playerId }) => {
@@ -1475,6 +1566,13 @@ const activeDrafts = await db.all(
 );
 for (const draft of activeDrafts) {
   if (draft.format !== 'auction') await startPickTimer(draft.id);
+}
+
+const activeSlowDrafts = await db.all(
+  "SELECT * FROM drafts WHERE status = 'active' AND mode = 'async' AND pick_timer > 0 AND pick_deadline IS NOT NULL"
+);
+for (const draft of activeSlowDrafts) {
+  if (draft.format !== 'auction') await startSlowPickDeadline(draft.id);
 }
 
 const PORT = process.env.PORT || 3000;

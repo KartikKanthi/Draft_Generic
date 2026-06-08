@@ -165,9 +165,11 @@ for (const sql of [
   'ALTER TABLE drafts ADD COLUMN IF NOT EXISTS picks_per_team INTEGER NOT NULL DEFAULT 0',
   'ALTER TABLE drafts ADD COLUMN IF NOT EXISTS auction_paused INTEGER NOT NULL DEFAULT 0',
   'ALTER TABLE drafts ADD COLUMN IF NOT EXISTS nomination_paused_remaining_ms INTEGER',
+  'ALTER TABLE drafts ADD COLUMN IF NOT EXISTS pick_deadline TIMESTAMPTZ',
   'ALTER TABLE players ADD COLUMN IF NOT EXISTS unsold INTEGER NOT NULL DEFAULT 0',
   'ALTER TABLE players ADD COLUMN IF NOT EXISTS sort_order INTEGER NOT NULL DEFAULT 0',
   'ALTER TABLE leagues ADD COLUMN IF NOT EXISTS waiver_order JSONB',
+  'ALTER TABLE teams ADD COLUMN IF NOT EXISTS email TEXT',
 ]) {
   await pool.query(sql);
 }

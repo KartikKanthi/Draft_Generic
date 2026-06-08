@@ -23,12 +23,18 @@ formatSelect.addEventListener('change', () => {
 
 modeSelect.addEventListener('change', () => {
   const label = document.getElementById('timer-label');
-  if (modeSelect.value === 'async') {
-    label.textContent = 'Pick Deadline (hours, 0 = no limit)';
-    document.querySelector('[name=pick_timer]').value = 24;
+  const timerInput = document.querySelector('[name=pick_timer]');
+  if (modeSelect.value === 'slow') {
+    label.textContent = 'Hours per pick (0 = no deadline)';
+    timerInput.value = 24;
+    timerGroup.style.display = '';
+  } else if (modeSelect.value === 'async') {
+    timerGroup.style.display = 'none';
+    timerInput.value = 0;
   } else {
     label.textContent = 'Pick Timer (seconds, 0 = no limit)';
-    document.querySelector('[name=pick_timer]').value = 90;
+    timerInput.value = 90;
+    timerGroup.style.display = '';
   }
 });
 
@@ -85,6 +91,11 @@ document.getElementById('create-form').addEventListener('submit', async (e) => {
   const posReqs = getPositionRequirements();
   if (posReqs) fd.append('position_requirements', posReqs);
 
+  // Map 'slow' UI mode → mode='async' with hours-based pick_timer
+  if (fd.get('mode') === 'slow') {
+    fd.set('mode', 'async');
+  }
+
   try {
     const res = await fetch('/api/drafts', { method: 'POST', body: fd });
     const data = await res.json();
@@ -112,12 +123,13 @@ document.getElementById('join-form').addEventListener('submit', async (e) => {
 
   const draftId = form.draft_id.value.trim();
   const teamName = form.team_name.value.trim();
+  const email = form.email?.value?.trim() || null;
 
   try {
     const res = await fetch(`/api/drafts/${draftId}/join`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ team_name: teamName })
+      body: JSON.stringify({ team_name: teamName, email })
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error);

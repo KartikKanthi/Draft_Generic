@@ -53,9 +53,20 @@
       <!-- Join as team (shown to anyone without a team token, including commissioner) -->
       <div id="join-as-team-section" style="display:none" class="waiting-section">
         <h3>Join as a Team</h3>
-        <div style="display:flex;gap:8px">
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
           <input type="text" id="join-team-name" placeholder="Your team name" style="max-width:240px">
+          <input type="email" id="join-team-email" placeholder="Email (for pick notifications)" style="max-width:240px">
           <button class="btn btn-primary" id="join-as-team-btn">Join</button>
+        </div>
+      </div>
+
+      <!-- Email for slow draft pick notifications (shown when user has a team in a slow draft) -->
+      <div id="slow-draft-email-section" style="display:none" class="waiting-section">
+        <h3>⏰ Pick Notifications</h3>
+        <p style="color:var(--text-muted);font-size:12px;margin-bottom:8px">This is a slow draft. Enter your email to be notified when it's your turn.</p>
+        <div style="display:flex;gap:8px">
+          <input type="email" id="slow-draft-email-input" placeholder="your@email.com" style="flex:1;max-width:300px">
+          <button class="btn btn-primary" id="save-email-btn">Save</button>
         </div>
       </div>
 

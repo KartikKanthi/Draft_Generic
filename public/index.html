@@ -42,7 +42,8 @@
             <label>Draft Mode</label>
             <select name="mode" id="mode-select">
               <option value="live">Live (real-time)</option>
-              <option value="async">Async (pick anytime)</option>
+              <option value="slow">Slow Draft (email + deadline)</option>
+              <option value="async">Open Async (no deadline)</option>
             </select>
           </div>
         </div>
@@ -100,6 +101,10 @@
         <div class="form-group">
           <label>Your Team Name</label>
           <input type="text" name="team_name" placeholder="My Awesome Team" required>
+        </div>
+        <div class="form-group">
+          <label>Email <small style="color:var(--text-muted)">(optional — for pick notifications in slow drafts)</small></label>
+          <input type="email" name="email" placeholder="you@example.com">
         </div>
         <button type="submit" class="btn btn-primary btn-full">Join Draft</button>
       </form>

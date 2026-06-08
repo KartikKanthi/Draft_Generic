@@ -88,6 +88,7 @@ select option { background: var(--surface2); }
 .badge-auction { background: #2d1f3d; color: #d2a8ff; }
 .badge-live { background: #1f3d28; color: var(--success); }
 .badge-async { background: #1f2d3d; color: #79c0ff; }
+.badge-slow { background: #3d2f10; color: var(--warning); }
 .badge-waiting { background: var(--surface3); color: var(--text-muted); }
 .badge-active { background: #1f3d28; color: var(--success); }
 .badge-completed { background: var(--surface3); color: var(--text-muted); }

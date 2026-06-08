@@ -47,6 +47,7 @@ let boardView = 'grid'; // 'grid' | 'list'
 let pendingPickId = null;
 let clientTimerInterval = null;
 let clientTimerEnd = null;
+let slowDeadlineInterval = null;
 
 // ── Socket ────────────────────────────────────────────────────────────────────
 const socket = io();
@@ -192,6 +193,21 @@ function renderWaiting() {
   } else {
     myLinkSection.style.display = 'none';
   }
+
+  // Show email setup section for slow drafts when the user has a team
+  const emailSection = document.getElementById('slow-draft-email-section');
+  if (emailSection) {
+    if (state.is_slow_draft && MY_TEAM_ID && MY_TEAM_TOKEN) {
+      emailSection.style.display = 'block';
+      const myTeam = state.teams.find(t => t.id === MY_TEAM_ID);
+      const emailInput = document.getElementById('slow-draft-email-input');
+      if (emailInput && myTeam?.email && !emailInput.value) {
+        emailInput.value = myTeam.email;
+      }
+    } else {
+      emailSection.style.display = 'none';
+    }
+  }
 }
 
 function renderActive() {
@@ -265,8 +281,12 @@ function renderStatusBar(onClockTeam) {
 
     if (state.mode === 'live' && state.pick_timer > 0) {
       timerEl.style.display = 'block';
+    } else if (state.is_slow_draft && state.pick_deadline) {
+      timerEl.style.display = 'block';
+      startSlowDeadlineCountdown(state.pick_deadline, timerEl);
     } else {
       timerEl.style.display = 'none';
+      stopSlowDeadlineCountdown();
     }
   }
 }
@@ -782,11 +802,12 @@ document.getElementById('copy-my-link-btn')?.addEventListener('click', () => {
 document.getElementById('join-as-team-btn')?.addEventListener('click', async () => {
   const name = document.getElementById('join-team-name').value.trim();
   if (!name) { toast('Enter a team name', 'error'); return; }
+  const email = document.getElementById('join-team-email')?.value?.trim() || null;
   try {
     const res = await fetch(`/api/drafts/${DRAFT_ID}/join`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ team_name: name })
+      body: JSON.stringify({ team_name: name, email })
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error);
@@ -944,8 +965,13 @@ function setFormatBadge() {
 
 function setModeBadge() {
   const el = document.getElementById('mode-badge');
-  el.textContent = state.mode === 'live' ? 'Live' : 'Async';
-  el.className = `badge badge-${state.mode}`;
+  if (state.is_slow_draft) {
+    el.textContent = 'Slow';
+    el.className = 'badge badge-slow';
+  } else {
+    el.textContent = state.mode === 'live' ? 'Live' : 'Async';
+    el.className = `badge badge-${state.mode}`;
+  }
 }
 
 function setStatusBadge() {
@@ -970,6 +996,57 @@ function updatePickCounter() {
     el.textContent = '';
   }
 }
+
+// ── Slow Draft Deadline Countdown ────────────────────────────────────────────
+function startSlowDeadlineCountdown(deadlineIso, timerEl) {
+  stopSlowDeadlineCountdown();
+  function tick() {
+    const remaining = Math.max(0, new Date(deadlineIso).getTime() - Date.now());
+    const totalMins = Math.floor(remaining / 60000);
+    const hours = Math.floor(totalMins / 60);
+    const mins = totalMins % 60;
+    let text;
+    if (hours >= 24) {
+      const days = Math.floor(hours / 24);
+      const remHours = hours % 24;
+      text = `${days}d ${remHours}h`;
+    } else if (hours > 0) {
+      text = `${hours}h ${mins}m`;
+    } else if (totalMins > 0) {
+      const secs = Math.floor((remaining % 60000) / 1000);
+      text = `${mins}m ${secs}s`;
+    } else {
+      text = 'Time up';
+    }
+    timerEl.textContent = text;
+    const cls = totalMins < 60 ? 'timer warning' : totalMins < 10 ? 'timer urgent' : 'timer ok';
+    timerEl.className = cls;
+  }
+  tick();
+  slowDeadlineInterval = setInterval(tick, 1000);
+}
+
+function stopSlowDeadlineCountdown() {
+  if (slowDeadlineInterval) { clearInterval(slowDeadlineInterval); slowDeadlineInterval = null; }
+}
+
+// ── Slow Draft Email Save ─────────────────────────────────────────────────────
+document.getElementById('save-email-btn')?.addEventListener('click', async () => {
+  const email = document.getElementById('slow-draft-email-input')?.value?.trim();
+  if (!email) { toast('Enter an email address', 'error'); return; }
+  try {
+    const res = await fetch(`/api/drafts/${DRAFT_ID}/teams/${MY_TEAM_ID}/email`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token: MY_TEAM_TOKEN, email })
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error);
+    toast('Email saved — you\'ll be notified when it\'s your pick', 'success');
+  } catch (err) {
+    toast(err.message, 'error');
+  }
+});
 
 // ── Initial load ──────────────────────────────────────────────────────────────
 // If not connected via socket yet, fetch state directly for fast initial render
