@@ -283,7 +283,13 @@ function renderStatusBar(onClockTeam) {
       timerEl.style.display = 'block';
     } else if (state.is_slow_draft && state.pick_deadline) {
       timerEl.style.display = 'block';
-      startSlowDeadlineCountdown(state.pick_deadline, timerEl);
+      if (isCurrentlyQuietHours(state)) {
+        stopSlowDeadlineCountdown();
+        timerEl.textContent = '⏸ Quiet hrs';
+        timerEl.className = 'timer ok';
+      } else {
+        startSlowDeadlineCountdown(state.pick_deadline, timerEl);
+      }
     } else {
       timerEl.style.display = 'none';
       stopSlowDeadlineCountdown();
@@ -995,6 +1001,19 @@ function updatePickCounter() {
   } else {
     el.textContent = '';
   }
+}
+
+// ── Quiet Hours Check ─────────────────────────────────────────────────────────
+function isCurrentlyQuietHours(s) {
+  if (!s.is_slow_draft || s.quiet_hours_start === s.quiet_hours_end) return false;
+  try {
+    const h = parseInt(new Intl.DateTimeFormat('en-US', {
+      timeZone: s.quiet_timezone || 'Europe/London',
+      hour: '2-digit', hour12: false
+    }).format(new Date()));
+    const hr = h === 24 ? 0 : h;
+    return hr >= s.quiet_hours_start && hr < s.quiet_hours_end;
+  } catch { return false; }
 }
 
 // ── Slow Draft Deadline Countdown ────────────────────────────────────────────

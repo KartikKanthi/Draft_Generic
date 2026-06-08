@@ -66,6 +66,44 @@
           </div>
         </div>
 
+        <div id="quiet-hours-group" style="display:none">
+          <div class="form-row">
+            <div class="form-group">
+              <label>Quiet hours — from <small style="color:var(--text-muted)">(no auto-pick before this hour)</small></label>
+              <select name="quiet_hours_end">
+                <option value="6">6am</option>
+                <option value="7">7am</option>
+                <option value="8" selected>8am</option>
+                <option value="9">9am</option>
+                <option value="10">10am</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label>Quiet hours — until <small style="color:var(--text-muted)">(countdown pauses after this hour)</small></label>
+              <select name="quiet_hours_start">
+                <option value="21">9pm</option>
+                <option value="22">10pm</option>
+                <option value="23">11pm</option>
+                <option value="0" selected>Midnight</option>
+              </select>
+            </div>
+          </div>
+          <div class="form-group">
+            <label>Timezone</label>
+            <select name="quiet_timezone">
+              <option value="Europe/London" selected>UK (GMT/BST)</option>
+              <option value="Europe/Paris">Central Europe (CET/CEST)</option>
+              <option value="America/New_York">US Eastern (ET)</option>
+              <option value="America/Chicago">US Central (CT)</option>
+              <option value="America/Denver">US Mountain (MT)</option>
+              <option value="America/Los_Angeles">US Pacific (PT)</option>
+              <option value="Asia/Kolkata">India (IST)</option>
+              <option value="Australia/Sydney">Australia Eastern (AET)</option>
+              <option value="UTC">UTC</option>
+            </select>
+          </div>
+        </div>
+
         <div class="form-group" id="budget-group" style="display:none">
           <label>Auction Budget per Team ($)</label>
           <input type="number" name="auction_budget" min="1" value="200">

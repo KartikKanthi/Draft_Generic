@@ -21,6 +21,8 @@ formatSelect.addEventListener('change', () => {
   budgetGroup.style.display = formatSelect.value === 'auction' ? 'block' : 'none';
 });
 
+const quietHoursGroup = document.getElementById('quiet-hours-group');
+
 modeSelect.addEventListener('change', () => {
   const label = document.getElementById('timer-label');
   const timerInput = document.querySelector('[name=pick_timer]');
@@ -28,13 +30,16 @@ modeSelect.addEventListener('change', () => {
     label.textContent = 'Hours per pick (0 = no deadline)';
     timerInput.value = 24;
     timerGroup.style.display = '';
+    quietHoursGroup.style.display = '';
   } else if (modeSelect.value === 'async') {
     timerGroup.style.display = 'none';
+    quietHoursGroup.style.display = 'none';
     timerInput.value = 0;
   } else {
     label.textContent = 'Pick Timer (seconds, 0 = no limit)';
     timerInput.value = 90;
     timerGroup.style.display = '';
+    quietHoursGroup.style.display = 'none';
   }
 });
 

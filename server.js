@@ -125,7 +125,10 @@ async function getDraftState(draftId) {
     teams,
     players: players.map(p => ({ ...p, metadata: p.metadata ? JSON.parse(p.metadata) : {} })),
     current_bids: currentBids,
-    is_slow_draft: draft.mode === 'async' && draft.pick_timer > 0
+    is_slow_draft: draft.mode === 'async' && draft.pick_timer > 0,
+    quiet_hours_start: draft.quiet_hours_start ?? 0,
+    quiet_hours_end: draft.quiet_hours_end ?? 8,
+    quiet_timezone: draft.quiet_timezone || 'Europe/London'
   };
 }
 
@@ -197,6 +200,48 @@ function clearPickTimer(draftId) {
   }
 }
 
+// ── Quiet-Hours Helpers ───────────────────────────────────────────────────────
+
+function hourInTz(ms, timezone) {
+  const h = parseInt(new Intl.DateTimeFormat('en-US', {
+    timeZone: timezone, hour: '2-digit', hour12: false
+  }).format(new Date(ms)));
+  return h === 24 ? 0 : h;
+}
+
+// Scan minute-by-minute until we hit the start of targetHour in the given timezone.
+// Handles DST transitions correctly.
+function nextTzHour(fromMs, targetHour, timezone) {
+  let t = Math.ceil(fromMs / 60000) * 60000;
+  for (let i = 0; i < 26 * 60; i++) {
+    if (hourInTz(t, timezone) === targetHour && hourInTz(t - 60000, timezone) !== targetHour) return t;
+    t += 60000;
+  }
+  return fromMs + 27 * 3600000; // safety fallback
+}
+
+// Compute pick deadline accounting for quiet hours (hours don't count during quiet window).
+function deadlineSkippingQuiet(fromMs, pickHours, quietStart, quietEnd, timezone) {
+  if (quietStart === quietEnd) return fromMs + pickHours * 3600000;
+
+  let remaining = pickHours * 3600000;
+  let t = fromMs;
+
+  for (let i = 0; i < 100 && remaining > 0; i++) {
+    const h = hourInTz(t, timezone);
+    if (h >= quietStart && h < quietEnd) {
+      t = nextTzHour(t, quietEnd, timezone);
+      continue;
+    }
+    const nextQ = nextTzHour(t, quietStart, timezone);
+    const active = nextQ - t;
+    if (remaining <= active) { t += remaining; remaining = 0; }
+    else { remaining -= active; t = nextQ; }
+  }
+
+  return t;
+}
+
 // ── Slow Draft Deadline ───────────────────────────────────────────────────────
 
 async function startSlowPickDeadline(draftId) {
@@ -222,7 +267,10 @@ async function setSlowPickDeadlineAndNotify(draftId, nextPickNumber) {
   const draft = await db.get('SELECT * FROM drafts WHERE id = $1', [draftId]);
   if (!draft || draft.pick_timer === 0) return;
 
-  const deadlineMs = Date.now() + draft.pick_timer * 60 * 60 * 1000;
+  const qs = draft.quiet_hours_start ?? 0;
+  const qe = draft.quiet_hours_end ?? 8;
+  const tz = draft.quiet_timezone || 'Europe/London';
+  const deadlineMs = deadlineSkippingQuiet(Date.now(), draft.pick_timer, qs, qe, tz);
   const deadline = new Date(deadlineMs).toISOString();
   await db.run('UPDATE drafts SET pick_deadline = $1 WHERE id = $2', [deadline, draftId]);
 
@@ -427,7 +475,8 @@ async function closeAuction(draftId) {
 
 app.post('/api/drafts', upload.single('players_csv'), async (req, res) => {
   try {
-    const { name, format, mode, num_teams, pick_timer, auction_budget, position_requirements, picks_per_team } = req.body;
+    const { name, format, mode, num_teams, pick_timer, auction_budget, position_requirements, picks_per_team,
+            quiet_hours_start, quiet_hours_end, quiet_timezone } = req.body;
     if (!name?.trim() || !format || !mode || !num_teams)
       return res.status(400).json({ error: 'Missing required fields' });
 
@@ -442,11 +491,14 @@ app.post('/api/drafts', upload.single('players_csv'), async (req, res) => {
     const posReqs = position_requirements || null;
     const ppt = Math.max(0, parseInt(picks_per_team) || 0);
     const ownerId = req.user?.id || null;
+    const quietStart = parseInt(quiet_hours_start ?? 0);
+    const quietEnd = parseInt(quiet_hours_end ?? 8);
+    const quietTz = quiet_timezone || 'Europe/London';
 
     await db.run(`
-      INSERT INTO drafts (id, name, format, mode, num_teams, pick_timer, auction_budget, commissioner_token, position_requirements, picks_per_team, owner_id)
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-    `, [draftId, name.trim(), format, mode, numTeams, timer, budget, commissionerToken, posReqs, ppt, ownerId]);
+      INSERT INTO drafts (id, name, format, mode, num_teams, pick_timer, auction_budget, commissioner_token, position_requirements, picks_per_team, owner_id, quiet_hours_start, quiet_hours_end, quiet_timezone)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+    `, [draftId, name.trim(), format, mode, numTeams, timer, budget, commissionerToken, posReqs, ppt, ownerId, quietStart, quietEnd, quietTz]);
 
     let playerCount = 0;
     if (req.file) {
