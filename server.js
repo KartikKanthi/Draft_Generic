@@ -98,6 +98,16 @@ app.get('/api/drafts/:id/commissioner-token', async (req, res) => {
   res.json({ commissioner_token: draft.commissioner_token });
 });
 
+app.get('/api/drafts/:id/my-team', async (req, res) => {
+  if (!req.user) return res.status(401).json({ error: 'Not logged in' });
+  const team = await db.get(
+    'SELECT id, token FROM teams WHERE draft_id = $1 AND owner_id = $2',
+    [req.params.id, req.user.id]
+  );
+  if (!team) return res.status(404).json({ error: 'No team found' });
+  res.json({ team_id: team.id, token: team.token });
+});
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 async function getDraftState(draftId) {
@@ -581,9 +591,10 @@ app.post('/api/drafts/:id/join', async (req, res) => {
   const teamId = randomUUID();
   const token = randomUUID();
   const teamEmail = email?.trim() || null;
+  const teamOwnerId = req.user?.id || null;
   await db.run(
-    'INSERT INTO teams (id, draft_id, name, token, pick_order, budget, email) VALUES ($1, $2, $3, $4, $5, $6, $7)',
-    [teamId, req.params.id, team_name.trim(), token, teamCount, draft.auction_budget, teamEmail]
+    'INSERT INTO teams (id, draft_id, name, token, pick_order, budget, email, owner_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)',
+    [teamId, req.params.id, team_name.trim(), token, teamCount, draft.auction_budget, teamEmail, teamOwnerId]
   );
 
   const state = await getDraftState(req.params.id);

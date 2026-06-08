@@ -39,6 +39,19 @@ if (!COMMISSIONER_TOKEN) {
     });
 }
 
+// Auto-restore team credentials for logged-in team members on any device
+if (!MY_TEAM_TOKEN) {
+  fetch(`/api/drafts/${DRAFT_ID}/my-team`)
+    .then(r => r.ok ? r.json() : null)
+    .then(data => {
+      if (data?.token) {
+        localStorage.setItem(`team_${DRAFT_ID}_id`, data.team_id);
+        localStorage.setItem(`team_${DRAFT_ID}_token`, data.token);
+        location.reload();
+      }
+    });
+}
+
 initAuth('auth-container');
 
 let state = null;

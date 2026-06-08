@@ -173,6 +173,7 @@ for (const sql of [
   'ALTER TABLE players ADD COLUMN IF NOT EXISTS sort_order INTEGER NOT NULL DEFAULT 0',
   'ALTER TABLE leagues ADD COLUMN IF NOT EXISTS waiver_order JSONB',
   'ALTER TABLE teams ADD COLUMN IF NOT EXISTS email TEXT',
+  'ALTER TABLE teams ADD COLUMN IF NOT EXISTS owner_id TEXT REFERENCES users(id)',
 ]) {
   await pool.query(sql);
 }
