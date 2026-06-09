@@ -19,6 +19,9 @@
     </div>
     <div class="header-right">
       <span id="pick-counter"></span>
+      <button class="btn btn-sm" id="trades-btn" style="display:none;position:relative">
+        Trades<span id="trades-badge" style="display:none;position:absolute;top:-6px;right:-6px;background:var(--warning);color:#000;border-radius:50%;width:16px;height:16px;font-size:10px;font-weight:700;line-height:16px;text-align:center"></span>
+      </button>
       <button class="btn btn-sm" id="copy-id-btn">Copy Draft ID</button>
       <div id="auth-container"></div>
     </div>
@@ -194,6 +197,65 @@
         </div>
       </div>
       <div class="rosters-grid" id="final-rosters"></div>
+    </div>
+  </div>
+
+  <!-- Trade Proposal Modal -->
+  <div class="modal-overlay" id="trade-modal" style="display:none">
+    <div class="modal" style="max-width:640px;width:95vw;max-height:90vh;overflow-y:auto">
+      <h3 style="margin-bottom:16px">Propose Trade</h3>
+      <div style="margin-bottom:12px">
+        <label style="font-size:12px;color:var(--text-muted);display:block;margin-bottom:4px">Trade with</label>
+        <select id="trade-opponent-id"></select>
+      </div>
+      <div id="trade-columns" style="display:none">
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
+          <div>
+            <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:0.5px;color:var(--text-muted);margin-bottom:8px">You Offer</div>
+            <div style="font-size:11px;color:var(--text-muted);margin-bottom:4px">Picks</div>
+            <div id="trade-offer-picks" style="margin-bottom:10px"></div>
+            <div style="font-size:11px;color:var(--text-muted);margin-bottom:4px">Players</div>
+            <div id="trade-offer-players"></div>
+          </div>
+          <div>
+            <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:0.5px;color:var(--text-muted);margin-bottom:8px">You Want</div>
+            <div style="font-size:11px;color:var(--text-muted);margin-bottom:4px">Picks</div>
+            <div id="trade-request-picks" style="margin-bottom:10px"></div>
+            <div style="font-size:11px;color:var(--text-muted);margin-bottom:4px">Players</div>
+            <div id="trade-request-players"></div>
+          </div>
+        </div>
+        <div style="margin-top:12px">
+          <input type="text" id="trade-note" placeholder="Add a note (optional)">
+        </div>
+      </div>
+      <div class="modal-actions">
+        <button class="btn" id="trade-modal-cancel-btn">Cancel</button>
+        <button class="btn btn-primary" id="trade-submit-btn" style="display:none">Propose Trade</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Incoming Trade Modal -->
+  <div class="modal-overlay" id="trade-incoming-modal" style="display:none">
+    <div class="modal" style="max-width:520px;width:95vw">
+      <h3 id="trade-incoming-title" style="margin-bottom:12px">Trade Offer</h3>
+      <div id="trade-incoming-body" style="margin-bottom:16px"></div>
+      <div class="modal-actions">
+        <button class="btn btn-danger" id="trade-reject-btn">Reject</button>
+        <button class="btn btn-success" id="trade-accept-btn">Accept</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Trades List Modal -->
+  <div class="modal-overlay" id="trades-list-modal" style="display:none">
+    <div class="modal" style="max-width:580px;width:95vw;max-height:90vh;overflow-y:auto">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px">
+        <h3 style="margin:0">Draft Trades</h3>
+        <button class="btn btn-sm" id="trades-list-close-btn">Close</button>
+      </div>
+      <div id="trades-list-body"></div>
     </div>
   </div>
 

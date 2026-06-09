@@ -62,6 +62,14 @@ let clientTimerInterval = null;
 let clientTimerEnd = null;
 let slowDeadlineInterval = null;
 
+// Trade state
+let draftTrades = [];
+let tradeOfferedPickNums = new Set();
+let tradeRequestedPickNums = new Set();
+let tradeOfferedPlayerIds = new Set();
+let tradeRequestedPlayerIds = new Set();
+let activePendingTradeId = null; // trade currently shown in incoming modal
+
 // ── Socket ────────────────────────────────────────────────────────────────────
 const socket = io();
 
@@ -131,6 +139,26 @@ socket.on('auction-closed', ({ player, team, amount }) => {
 
 socket.on('error', ({ message }) => {
   toast(message, 'error');
+});
+
+socket.on('draft-trade', (event) => {
+  if (event.type === 'proposed') {
+    if (event.receiving_team_id === MY_TEAM_ID) {
+      toast(`Trade offer from ${event.proposing_team_name}!`, 'info');
+      fetchAndRenderTrades(event.trade_id);
+    } else if (event.proposing_team_id === MY_TEAM_ID) {
+      toast('Trade proposal sent', 'success');
+    }
+  } else if (event.type === 'accepted') {
+    toast(`Trade accepted between ${event.proposing_team_name} and ${event.receiving_team_name}`, 'success');
+    fetchAndRenderTrades();
+  } else if (event.type === 'rejected') {
+    if (event.proposing_team_id === MY_TEAM_ID) toast('Your trade offer was rejected', 'error');
+    fetchAndRenderTrades();
+  } else if (event.type === 'cancelled') {
+    if (event.receiving_team_id === MY_TEAM_ID) toast('A trade offer was withdrawn', 'info');
+    fetchAndRenderTrades();
+  }
 });
 
 socket.on('draft-deleted', () => {
@@ -223,16 +251,29 @@ function renderWaiting() {
   }
 }
 
+function getOnClockTeam() {
+  if (!state || state.format === 'auction') return null;
+  const { teams, format, current_pick, pick_ownership } = state;
+  const ownership = pick_ownership || {};
+  const override = ownership[String(current_pick)];
+  if (override) return teams.find(t => t.id === override) || null;
+  return teams[getTeamIndex(current_pick, teams.length, format)] || null;
+}
+
 function renderActive() {
   const teams = state.teams;
   const numTeams = teams.length;
   const format = state.format;
 
-  // Current on-clock team (for non-auction)
-  let onClockTeam = null;
+  // Current on-clock team (for non-auction) — respects pick_ownership for traded picks
+  const onClockTeam = format !== 'auction' ? getOnClockTeam() : null;
+
+  // Show Trades button for non-auction active drafts
+  const tradesBtn = document.getElementById('trades-btn');
   if (format !== 'auction') {
-    const idx = getTeamIndex(state.current_pick, numTeams, format);
-    onClockTeam = teams[idx];
+    tradesBtn.style.display = '';
+  } else {
+    tradesBtn.style.display = 'none';
   }
 
   // Status bar
@@ -691,7 +732,6 @@ function renderMyTeam() {
 }
 
 function renderAllTeams(onClockTeam) {
-  const numTeams = state.teams.length;
   const list = document.getElementById('all-teams-list');
   list.innerHTML = state.teams.map(team => {
     const picks = state.players.filter(p => p.drafted_by === team.id).length;
@@ -704,11 +744,13 @@ function renderAllTeams(onClockTeam) {
     if (isMe) cls += ' me';
 
     const picksLabel = ppt2 > 0 ? `${picks}/${ppt2}` : `${picks} pick${picks !== 1 ? 's' : ''}`;
+    const canTrade = MY_TEAM_TOKEN && !isMe && state.status === 'active' && state.format !== 'auction';
     return `<div class="${cls}">
       <div>
         <div style="font-weight:${isMe ? '700' : '400'}">${escHtml(team.name)}</div>
         ${isClock ? `<div class="on-clock-label">ON THE CLOCK</div>` : ''}
         ${isFull ? `<div style="font-size:10px;color:var(--success);font-weight:600">FULL</div>` : ''}
+        ${canTrade ? `<button class="btn btn-sm" style="font-size:10px;padding:2px 8px;margin-top:4px" data-trade-with="${escHtml(team.id)}">Trade</button>` : ''}
       </div>
       <div style="text-align:right">
         <div class="team-picks-count">${picksLabel}</div>
@@ -716,6 +758,10 @@ function renderAllTeams(onClockTeam) {
       </div>
     </div>`;
   }).join('');
+
+  list.querySelectorAll('[data-trade-with]').forEach(btn => {
+    btn.addEventListener('click', () => openTradeModal(btn.dataset.tradeWith));
+  });
 }
 
 async function renderCompleted() {
@@ -942,6 +988,315 @@ document.getElementById('copy-id-btn-waiting')?.addEventListener('click', copyDr
 document.getElementById('player-search')?.addEventListener('input', () => { if (state) render(); });
 document.getElementById('pos-filter')?.addEventListener('change', () => { if (state) render(); });
 document.getElementById('team-filter')?.addEventListener('change', () => { if (state) render(); });
+
+// ── Draft Trades ──────────────────────────────────────────────────────────────
+
+function getTeamFuturePicks(teamId) {
+  if (!state) return [];
+  const { teams, format, current_pick, picks_per_team, players, pick_ownership } = state;
+  const numTeams = teams.length;
+  const ppt = picks_per_team > 0 ? picks_per_team : Math.ceil(players.length / numTeams);
+  const totalPicks = numTeams * ppt;
+  const ownership = pick_ownership || {};
+  const result = [];
+  for (let p = current_pick + 1; p < totalPicks; p++) {
+    const ownerId = ownership[String(p)] || teams[getTeamIndex(p, numTeams, format)]?.id;
+    if (ownerId === teamId) {
+      const round = Math.floor(p / numTeams) + 1;
+      const pickInRound = (p % numTeams) + 1;
+      result.push({ pickNum: p, label: `Round ${round}, Pick ${pickInRound}` });
+    }
+  }
+  return result;
+}
+
+async function fetchAndRenderTrades(autoOpenTradeId = null) {
+  try {
+    const res = await fetch(`/api/drafts/${DRAFT_ID}/trades`);
+    if (!res.ok) return;
+    draftTrades = await res.json();
+    updateTradesBadge();
+    if (autoOpenTradeId) {
+      const trade = draftTrades.find(t => t.id === autoOpenTradeId);
+      if (trade && trade.status === 'pending' && trade.receiving_team_id === MY_TEAM_ID) {
+        showIncomingTradeModal(trade);
+      }
+    }
+  } catch { /* ignore */ }
+}
+
+function updateTradesBadge() {
+  const badge = document.getElementById('trades-badge');
+  if (!badge) return;
+  const pending = draftTrades.filter(t =>
+    t.status === 'pending' && t.receiving_team_id === MY_TEAM_ID
+  ).length;
+  if (pending > 0) {
+    badge.textContent = pending;
+    badge.style.display = 'block';
+  } else {
+    badge.style.display = 'none';
+  }
+}
+
+function openTradeModal(opponentId) {
+  if (!MY_TEAM_TOKEN) return;
+  tradeOfferedPickNums = new Set();
+  tradeRequestedPickNums = new Set();
+  tradeOfferedPlayerIds = new Set();
+  tradeRequestedPlayerIds = new Set();
+
+  const select = document.getElementById('trade-opponent-id');
+  select.innerHTML = state.teams
+    .filter(t => t.id !== MY_TEAM_ID)
+    .map(t => `<option value="${escHtml(t.id)}">${escHtml(t.name)}</option>`)
+    .join('');
+  if (opponentId) select.value = opponentId;
+
+  document.getElementById('trade-note').value = '';
+  renderTradeColumns();
+  document.getElementById('trade-modal').style.display = 'flex';
+}
+
+function renderTradeColumns() {
+  const opponentId = document.getElementById('trade-opponent-id').value;
+  if (!opponentId) {
+    document.getElementById('trade-columns').style.display = 'none';
+    document.getElementById('trade-submit-btn').style.display = 'none';
+    return;
+  }
+
+  document.getElementById('trade-columns').style.display = '';
+  document.getElementById('trade-submit-btn').style.display = '';
+
+  const myPicks = getTeamFuturePicks(MY_TEAM_ID);
+  const theirPicks = getTeamFuturePicks(opponentId);
+  const myPlayers = state.players.filter(p => p.drafted_by === MY_TEAM_ID);
+  const theirPlayers = state.players.filter(p => p.drafted_by === opponentId);
+
+  const renderPickList = (picks, selectedSet, containerId) => {
+    const el = document.getElementById(containerId);
+    el.innerHTML = picks.length
+      ? picks.map(p => `<div class="trade-item${selectedSet.has(p.pickNum) ? ' selected' : ''}" data-pick="${p.pickNum}">${escHtml(p.label)}</div>`).join('')
+      : '<div style="color:var(--text-muted);font-size:12px;padding:4px 0">No future picks</div>';
+  };
+
+  const renderPlayerList = (players, selectedSet, containerId) => {
+    const el = document.getElementById(containerId);
+    el.innerHTML = players.length
+      ? players.map(p => `<div class="trade-item${selectedSet.has(p.id) ? ' selected' : ''}" data-player="${escHtml(p.id)}"><span class="pos-badge">${escHtml(p.position || '—')}</span>${escHtml(p.name)}</div>`).join('')
+      : '<div style="color:var(--text-muted);font-size:12px;padding:4px 0">No players drafted yet</div>';
+  };
+
+  renderPickList(myPicks, tradeOfferedPickNums, 'trade-offer-picks');
+  renderPickList(theirPicks, tradeRequestedPickNums, 'trade-request-picks');
+  renderPlayerList(myPlayers, tradeOfferedPlayerIds, 'trade-offer-players');
+  renderPlayerList(theirPlayers, tradeRequestedPlayerIds, 'trade-request-players');
+
+  document.querySelectorAll('#trade-offer-picks .trade-item[data-pick]').forEach(el => {
+    el.addEventListener('click', () => {
+      const pn = parseInt(el.dataset.pick);
+      if (tradeOfferedPickNums.has(pn)) tradeOfferedPickNums.delete(pn); else tradeOfferedPickNums.add(pn);
+      renderTradeColumns();
+    });
+  });
+  document.querySelectorAll('#trade-request-picks .trade-item[data-pick]').forEach(el => {
+    el.addEventListener('click', () => {
+      const pn = parseInt(el.dataset.pick);
+      if (tradeRequestedPickNums.has(pn)) tradeRequestedPickNums.delete(pn); else tradeRequestedPickNums.add(pn);
+      renderTradeColumns();
+    });
+  });
+  document.querySelectorAll('#trade-offer-players .trade-item[data-player]').forEach(el => {
+    el.addEventListener('click', () => {
+      if (tradeOfferedPlayerIds.has(el.dataset.player)) tradeOfferedPlayerIds.delete(el.dataset.player);
+      else tradeOfferedPlayerIds.add(el.dataset.player);
+      renderTradeColumns();
+    });
+  });
+  document.querySelectorAll('#trade-request-players .trade-item[data-player]').forEach(el => {
+    el.addEventListener('click', () => {
+      if (tradeRequestedPlayerIds.has(el.dataset.player)) tradeRequestedPlayerIds.delete(el.dataset.player);
+      else tradeRequestedPlayerIds.add(el.dataset.player);
+      renderTradeColumns();
+    });
+  });
+}
+
+function tradeItemLabel(trade, state) {
+  const numTeams = state.teams.length;
+  const pickLabel = pns => (pns || []).map(pn => {
+    const r = Math.floor(pn / numTeams) + 1;
+    const p = (pn % numTeams) + 1;
+    return `R${r}P${p}`;
+  });
+  const playerLabel = ids => (ids || []).map(id => {
+    const pl = state.players.find(p => p.id === id);
+    return pl ? `${pl.name}${pl.position ? ` (${pl.position})` : ''}` : id;
+  });
+  const offered = [...pickLabel(trade.offered_pick_numbers), ...playerLabel(trade.offered_player_ids)];
+  const requested = [...pickLabel(trade.requested_pick_numbers), ...playerLabel(trade.requested_player_ids)];
+  return { offered, requested };
+}
+
+function showIncomingTradeModal(trade) {
+  activePendingTradeId = trade.id;
+  document.getElementById('trade-incoming-title').textContent = `Trade offer from ${trade.proposing_team_name}`;
+
+  let body = '';
+  if (state) {
+    const { offered, requested } = tradeItemLabel(trade, state);
+    body += `<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+      <div>
+        <div style="font-size:11px;font-weight:700;text-transform:uppercase;color:var(--text-muted);margin-bottom:6px">They offer</div>
+        ${offered.map(s => `<div style="font-size:13px;padding:4px 0;border-bottom:1px solid var(--border)">${escHtml(s)}</div>`).join('') || '<div style="color:var(--text-muted);font-size:12px">Nothing</div>'}
+      </div>
+      <div>
+        <div style="font-size:11px;font-weight:700;text-transform:uppercase;color:var(--text-muted);margin-bottom:6px">You give</div>
+        ${requested.map(s => `<div style="font-size:13px;padding:4px 0;border-bottom:1px solid var(--border)">${escHtml(s)}</div>`).join('') || '<div style="color:var(--text-muted);font-size:12px">Nothing</div>'}
+      </div>
+    </div>`;
+  }
+  if (trade.note) body += `<div style="margin-top:10px;padding:8px;background:var(--surface2);border-radius:var(--radius-sm);font-size:12px;color:var(--text-muted)">"${escHtml(trade.note)}"</div>`;
+
+  document.getElementById('trade-incoming-body').innerHTML = body;
+  document.getElementById('trade-incoming-modal').style.display = 'flex';
+}
+
+function renderTradesList() {
+  const body = document.getElementById('trades-list-body');
+  if (draftTrades.length === 0) {
+    body.innerHTML = '<div style="color:var(--text-muted);text-align:center;padding:20px">No trades yet</div>';
+    return;
+  }
+
+  body.innerHTML = draftTrades.map(trade => {
+    const statusColor = { pending: 'var(--warning)', accepted: 'var(--success)', rejected: 'var(--danger)', cancelled: 'var(--text-muted)' }[trade.status] || 'var(--text-muted)';
+    let actions = '';
+    if (trade.status === 'pending') {
+      if (trade.receiving_team_id === MY_TEAM_ID) {
+        actions = `<button class="btn btn-sm btn-success" style="font-size:11px;padding:3px 8px" data-trade-respond="${escHtml(trade.id)}" data-action="accept">Accept</button>
+          <button class="btn btn-sm btn-danger" style="font-size:11px;padding:3px 8px" data-trade-respond="${escHtml(trade.id)}" data-action="reject">Reject</button>`;
+      } else if (trade.proposing_team_id === MY_TEAM_ID) {
+        actions = `<button class="btn btn-sm" style="font-size:11px;padding:3px 8px" data-trade-respond="${escHtml(trade.id)}" data-action="cancel">Cancel</button>`;
+      }
+    }
+
+    let summary = '';
+    if (state) {
+      const { offered, requested } = tradeItemLabel(trade, state);
+      summary = `<div style="font-size:12px;color:var(--text-muted);margin-top:4px">${escHtml(trade.proposing_team_name)} offers ${offered.join(', ') || '—'} for ${requested.join(', ') || '—'}</div>`;
+    }
+
+    return `<div class="trade-list-item ${trade.status}">
+      <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:8px">
+        <div>
+          <span style="font-weight:600;font-size:13px">${escHtml(trade.proposing_team_name)} → ${escHtml(trade.receiving_team_name)}</span>
+          ${summary}
+          ${trade.note ? `<div style="font-size:11px;color:var(--text-muted);margin-top:4px;font-style:italic">"${escHtml(trade.note)}"</div>` : ''}
+        </div>
+        <div style="display:flex;flex-direction:column;align-items:flex-end;gap:4px">
+          <span style="font-size:11px;font-weight:600;color:${statusColor};text-transform:uppercase">${trade.status}</span>
+          <div style="display:flex;gap:4px">${actions}</div>
+        </div>
+      </div>
+    </div>`;
+  }).join('');
+
+  body.querySelectorAll('[data-trade-respond]').forEach(btn => {
+    btn.addEventListener('click', () => respondTrade(btn.dataset.tradeRespond, btn.dataset.action));
+  });
+}
+
+async function respondTrade(tradeId, action) {
+  try {
+    const res = await fetch(`/api/drafts/${DRAFT_ID}/trades/${tradeId}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ team_token: MY_TEAM_TOKEN, action })
+    });
+    const data = await res.json();
+    if (!res.ok) { toast(data.error, 'error'); return; }
+    document.getElementById('trade-incoming-modal').style.display = 'none';
+    activePendingTradeId = null;
+    fetchAndRenderTrades();
+    if (action === 'accept') toast('Trade accepted!', 'success');
+    else if (action === 'reject') toast('Trade rejected', 'info');
+    else if (action === 'cancel') toast('Trade cancelled', 'info');
+  } catch (err) { toast(err.message, 'error'); }
+}
+
+// Trade modal event listeners
+document.getElementById('trade-opponent-id')?.addEventListener('change', () => {
+  tradeOfferedPickNums = new Set();
+  tradeRequestedPickNums = new Set();
+  tradeOfferedPlayerIds = new Set();
+  tradeRequestedPlayerIds = new Set();
+  renderTradeColumns();
+});
+
+document.getElementById('trade-modal-cancel-btn')?.addEventListener('click', () => {
+  document.getElementById('trade-modal').style.display = 'none';
+});
+
+document.getElementById('trade-modal')?.addEventListener('click', (e) => {
+  if (e.target === e.currentTarget) document.getElementById('trade-modal').style.display = 'none';
+});
+
+document.getElementById('trade-submit-btn')?.addEventListener('click', async () => {
+  const opponentId = document.getElementById('trade-opponent-id').value;
+  const note = document.getElementById('trade-note').value.trim();
+  const total = tradeOfferedPickNums.size + tradeOfferedPlayerIds.size;
+  const asked = tradeRequestedPickNums.size + tradeRequestedPlayerIds.size;
+  if (total === 0) { toast('Select at least one item to offer', 'error'); return; }
+  if (asked === 0) { toast('Select at least one item to request', 'error'); return; }
+
+  try {
+    const res = await fetch(`/api/drafts/${DRAFT_ID}/trades`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        team_token: MY_TEAM_TOKEN,
+        receiving_team_id: opponentId,
+        offered_pick_numbers: [...tradeOfferedPickNums],
+        offered_player_ids: [...tradeOfferedPlayerIds],
+        requested_pick_numbers: [...tradeRequestedPickNums],
+        requested_player_ids: [...tradeRequestedPlayerIds],
+        note: note || undefined,
+      })
+    });
+    const data = await res.json();
+    if (!res.ok) { toast(data.error, 'error'); return; }
+    document.getElementById('trade-modal').style.display = 'none';
+    fetchAndRenderTrades();
+  } catch (err) { toast(err.message, 'error'); }
+});
+
+document.getElementById('trade-accept-btn')?.addEventListener('click', () => {
+  if (activePendingTradeId) respondTrade(activePendingTradeId, 'accept');
+});
+
+document.getElementById('trade-reject-btn')?.addEventListener('click', () => {
+  if (activePendingTradeId) respondTrade(activePendingTradeId, 'reject');
+});
+
+document.getElementById('trade-incoming-modal')?.addEventListener('click', (e) => {
+  if (e.target === e.currentTarget) document.getElementById('trade-incoming-modal').style.display = 'none';
+});
+
+document.getElementById('trades-btn')?.addEventListener('click', async () => {
+  await fetchAndRenderTrades();
+  renderTradesList();
+  document.getElementById('trades-list-modal').style.display = 'flex';
+});
+
+document.getElementById('trades-list-close-btn')?.addEventListener('click', () => {
+  document.getElementById('trades-list-modal').style.display = 'none';
+});
+
+document.getElementById('trades-list-modal')?.addEventListener('click', (e) => {
+  if (e.target === e.currentTarget) document.getElementById('trades-list-modal').style.display = 'none';
+});
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 function getTeamIndex(pickNumber, numTeams, format) {

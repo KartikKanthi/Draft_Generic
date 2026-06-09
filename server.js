@@ -185,6 +185,13 @@ function getTeamIndexForPick(pickNumber, numTeams, format) {
   return pickInRound;
 }
 
+function getPickOwner(pickNumber, teams, format, pickOwnership) {
+  const override = (pickOwnership || {})[String(pickNumber)];
+  if (override) return override;
+  const idx = getTeamIndexForPick(pickNumber, teams.length, format);
+  return teams[idx]?.id ?? null;
+}
+
 function parseCsvBuffer(buffer) {
   return parse(buffer, { columns: true, skip_empty_lines: true, trim: true, bom: true });
 }
@@ -324,8 +331,9 @@ async function setSlowPickDeadlineAndNotify(draftId, nextPickNumber) {
   startSlowPickDeadline(draftId);
 
   const teams = await db.all('SELECT * FROM teams WHERE draft_id = $1 ORDER BY pick_order', [draftId]);
-  const nextIdx = getTeamIndexForPick(nextPickNumber, teams.length, draft.format);
-  const nextTeam = teams[nextIdx];
+  const pickOwnership = draft.pick_ownership || {};
+  const nextTeamId = getPickOwner(nextPickNumber, teams, draft.format, pickOwnership);
+  const nextTeam = teams.find(t => t.id === nextTeamId);
   if (nextTeam?.email) {
     const round = Math.floor(nextPickNumber / teams.length) + 1;
     const pickInRound = (nextPickNumber % teams.length) + 1;
@@ -357,8 +365,9 @@ async function processPick(draftId, playerId, teamToken, isAutoPick = false) {
   if (!draft || draft.status !== 'active') return false;
 
   const teams = await db.all('SELECT * FROM teams WHERE draft_id = $1 ORDER BY pick_order', [draftId]);
-  const expectedIdx = getTeamIndexForPick(draft.current_pick, teams.length, draft.format);
-  const pickingTeam = teams[expectedIdx];
+  const pickOwnershipMap = draft.pick_ownership || {};
+  const pickingTeamId = getPickOwner(draft.current_pick, teams, draft.format, pickOwnershipMap);
+  const pickingTeam = teams.find(t => t.id === pickingTeamId);
 
   if (!isAutoPick && teamToken && pickingTeam?.token !== teamToken) return false;
 
@@ -1400,6 +1409,188 @@ app.put('/api/leagues/:id/waivers/order', async (req, res) => {
   } catch (err) { console.error(err); res.status(500).json({ error: err.message }); }
 });
 
+// ── Draft Trade Routes ────────────────────────────────────────────────────────
+
+app.get('/api/drafts/:id/trades', async (req, res) => {
+  try {
+    const draft = await db.get('SELECT id FROM drafts WHERE id = $1', [req.params.id]);
+    if (!draft) return res.status(404).json({ error: 'Draft not found' });
+    const trades = await db.all(`
+      SELECT dt.*, pt.name as proposing_team_name, rt.name as receiving_team_name
+      FROM draft_trades dt
+      JOIN teams pt ON dt.proposing_team_id = pt.id
+      JOIN teams rt ON dt.receiving_team_id = rt.id
+      WHERE dt.draft_id = $1
+      ORDER BY dt.created_at DESC
+    `, [req.params.id]);
+    res.json(trades);
+  } catch (err) { console.error(err); res.status(500).json({ error: err.message }); }
+});
+
+app.post('/api/drafts/:id/trades', async (req, res) => {
+  try {
+    const { team_token, receiving_team_id,
+            offered_pick_numbers = [], offered_player_ids = [],
+            requested_pick_numbers = [], requested_player_ids = [],
+            note } = req.body;
+
+    if (!team_token || !receiving_team_id) return res.status(400).json({ error: 'team_token and receiving_team_id required' });
+    if (offered_pick_numbers.length + offered_player_ids.length === 0)
+      return res.status(400).json({ error: 'Must offer at least one pick or player' });
+    if (requested_pick_numbers.length + requested_player_ids.length === 0)
+      return res.status(400).json({ error: 'Must request at least one pick or player' });
+
+    const draft = await db.get('SELECT * FROM drafts WHERE id = $1', [req.params.id]);
+    if (!draft) return res.status(404).json({ error: 'Draft not found' });
+    if (draft.status !== 'active') return res.status(400).json({ error: 'Draft is not active' });
+    if (draft.format === 'auction') return res.status(400).json({ error: 'Trades not available in auction drafts' });
+
+    const proposingTeam = await db.get('SELECT * FROM teams WHERE draft_id = $1 AND token = $2', [req.params.id, team_token]);
+    if (!proposingTeam) return res.status(403).json({ error: 'Invalid team token' });
+
+    const receivingTeam = await db.get('SELECT * FROM teams WHERE id = $1 AND draft_id = $2', [receiving_team_id, req.params.id]);
+    if (!receivingTeam) return res.status(400).json({ error: 'Receiving team not found' });
+    if (proposingTeam.id === receivingTeam.id) return res.status(400).json({ error: 'Cannot trade with yourself' });
+
+    const teams = await db.all('SELECT * FROM teams WHERE draft_id = $1 ORDER BY pick_order', [req.params.id]);
+    const pickOwnership = draft.pick_ownership || {};
+
+    for (const pn of offered_pick_numbers) {
+      if (pn <= draft.current_pick) return res.status(400).json({ error: `Pick ${pn + 1} has already been made` });
+      if (getPickOwner(pn, teams, draft.format, pickOwnership) !== proposingTeam.id)
+        return res.status(400).json({ error: `Pick ${pn + 1} does not belong to your team` });
+    }
+    for (const pn of requested_pick_numbers) {
+      if (pn <= draft.current_pick) return res.status(400).json({ error: `Pick ${pn + 1} has already been made` });
+      if (getPickOwner(pn, teams, draft.format, pickOwnership) !== receivingTeam.id)
+        return res.status(400).json({ error: `Pick ${pn + 1} does not belong to ${receivingTeam.name}` });
+    }
+    for (const pid of offered_player_ids) {
+      const p = await db.get('SELECT id FROM players WHERE id = $1 AND draft_id = $2 AND drafted_by = $3',
+        [pid, req.params.id, proposingTeam.id]);
+      if (!p) return res.status(400).json({ error: 'An offered player is not on your squad' });
+    }
+    for (const pid of requested_player_ids) {
+      const p = await db.get('SELECT id FROM players WHERE id = $1 AND draft_id = $2 AND drafted_by = $3',
+        [pid, req.params.id, receivingTeam.id]);
+      if (!p) return res.status(400).json({ error: `A requested player is not on ${receivingTeam.name}'s squad` });
+    }
+
+    const tradeId = randomUUID();
+    await db.run(`
+      INSERT INTO draft_trades (id, draft_id, proposing_team_id, receiving_team_id,
+        offered_pick_numbers, offered_player_ids, requested_pick_numbers, requested_player_ids, note)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+    `, [tradeId, req.params.id, proposingTeam.id, receivingTeam.id,
+        JSON.stringify(offered_pick_numbers), JSON.stringify(offered_player_ids),
+        JSON.stringify(requested_pick_numbers), JSON.stringify(requested_player_ids),
+        note || null]);
+
+    io.to(`draft:${req.params.id}`).emit('draft-trade', {
+      type: 'proposed',
+      trade_id: tradeId,
+      proposing_team_id: proposingTeam.id,
+      proposing_team_name: proposingTeam.name,
+      receiving_team_id: receivingTeam.id,
+      receiving_team_name: receivingTeam.name,
+    });
+
+    res.json({ trade_id: tradeId });
+  } catch (err) { console.error(err); res.status(500).json({ error: err.message }); }
+});
+
+app.put('/api/drafts/:id/trades/:tradeId', async (req, res) => {
+  try {
+    const { team_token, action } = req.body;
+    if (!team_token || !action) return res.status(400).json({ error: 'team_token and action required' });
+    if (!['accept', 'reject', 'cancel'].includes(action)) return res.status(400).json({ error: 'Invalid action' });
+
+    const trade = await db.get('SELECT * FROM draft_trades WHERE id = $1 AND draft_id = $2',
+      [req.params.tradeId, req.params.id]);
+    if (!trade) return res.status(404).json({ error: 'Trade not found' });
+    if (trade.status !== 'pending') return res.status(400).json({ error: 'Trade is no longer pending' });
+
+    const actingTeam = await db.get('SELECT * FROM teams WHERE draft_id = $1 AND token = $2', [req.params.id, team_token]);
+    if (!actingTeam) return res.status(403).json({ error: 'Invalid team token' });
+
+    if (action === 'cancel') {
+      if (actingTeam.id !== trade.proposing_team_id) return res.status(403).json({ error: 'Only the proposing team can cancel' });
+      await db.run("UPDATE draft_trades SET status = 'cancelled', updated_at = NOW() WHERE id = $1", [trade.id]);
+      io.to(`draft:${req.params.id}`).emit('draft-trade', { type: 'cancelled', trade_id: trade.id,
+        proposing_team_id: trade.proposing_team_id, receiving_team_id: trade.receiving_team_id });
+      return res.json({ success: true });
+    }
+
+    if (actingTeam.id !== trade.receiving_team_id) return res.status(403).json({ error: 'Only the receiving team can accept or reject' });
+
+    if (action === 'reject') {
+      await db.run("UPDATE draft_trades SET status = 'rejected', updated_at = NOW() WHERE id = $1", [trade.id]);
+      io.to(`draft:${req.params.id}`).emit('draft-trade', { type: 'rejected', trade_id: trade.id,
+        proposing_team_id: trade.proposing_team_id, receiving_team_id: trade.receiving_team_id });
+      return res.json({ success: true });
+    }
+
+    // Accept — re-validate ownership then execute
+    const draft = await db.get('SELECT * FROM drafts WHERE id = $1', [req.params.id]);
+    if (!draft || draft.status !== 'active') return res.status(400).json({ error: 'Draft is not active' });
+
+    const teams = await db.all('SELECT * FROM teams WHERE draft_id = $1 ORDER BY pick_order', [req.params.id]);
+    const pickOwnership = draft.pick_ownership || {};
+
+    for (const pn of trade.offered_pick_numbers) {
+      if (pn <= draft.current_pick) return res.status(400).json({ error: `Pick ${pn + 1} has already been made` });
+      if (getPickOwner(pn, teams, draft.format, pickOwnership) !== trade.proposing_team_id)
+        return res.status(400).json({ error: 'Pick ownership changed since trade was proposed' });
+    }
+    for (const pn of trade.requested_pick_numbers) {
+      if (pn <= draft.current_pick) return res.status(400).json({ error: `Pick ${pn + 1} has already been made` });
+      if (getPickOwner(pn, teams, draft.format, pickOwnership) !== trade.receiving_team_id)
+        return res.status(400).json({ error: 'Pick ownership changed since trade was proposed' });
+    }
+    for (const pid of trade.offered_player_ids) {
+      const p = await db.get('SELECT id FROM players WHERE id = $1 AND drafted_by = $2', [pid, trade.proposing_team_id]);
+      if (!p) return res.status(400).json({ error: 'A player changed squads since trade was proposed' });
+    }
+    for (const pid of trade.requested_player_ids) {
+      const p = await db.get('SELECT id FROM players WHERE id = $1 AND drafted_by = $2', [pid, trade.receiving_team_id]);
+      if (!p) return res.status(400).json({ error: 'A player changed squads since trade was proposed' });
+    }
+
+    await db.transaction(async (client) => {
+      // Update pick ownership
+      const newOwnership = { ...pickOwnership };
+      for (const pn of trade.offered_pick_numbers) newOwnership[String(pn)] = trade.receiving_team_id;
+      for (const pn of trade.requested_pick_numbers) newOwnership[String(pn)] = trade.proposing_team_id;
+      if (trade.offered_pick_numbers.length + trade.requested_pick_numbers.length > 0) {
+        await client.query('UPDATE drafts SET pick_ownership = $1 WHERE id = $2',
+          [JSON.stringify(newOwnership), req.params.id]);
+      }
+      // Swap player ownership
+      for (const pid of trade.offered_player_ids)
+        await client.query('UPDATE players SET drafted_by = $1 WHERE id = $2', [trade.receiving_team_id, pid]);
+      for (const pid of trade.requested_player_ids)
+        await client.query('UPDATE players SET drafted_by = $1 WHERE id = $2', [trade.proposing_team_id, pid]);
+      await client.query("UPDATE draft_trades SET status = 'accepted', updated_at = NOW() WHERE id = $1", [trade.id]);
+    });
+
+    const proposingTeam = teams.find(t => t.id === trade.proposing_team_id);
+    const receivingTeam = teams.find(t => t.id === trade.receiving_team_id);
+
+    const newState = await getDraftState(req.params.id);
+    io.to(`draft:${req.params.id}`).emit('draft-state', newState);
+    io.to(`draft:${req.params.id}`).emit('draft-trade', {
+      type: 'accepted',
+      trade_id: trade.id,
+      proposing_team_id: trade.proposing_team_id,
+      proposing_team_name: proposingTeam?.name,
+      receiving_team_id: trade.receiving_team_id,
+      receiving_team_name: receivingTeam?.name,
+    });
+
+    return res.json({ success: true });
+  } catch (err) { console.error(err); res.status(500).json({ error: err.message }); }
+});
+
 // ── Socket.io ─────────────────────────────────────────────────────────────────
 
 io.on('connection', (socket) => {
@@ -1488,8 +1679,9 @@ io.on('connection', (socket) => {
     if (!team) return;
 
     const teams = await db.all('SELECT * FROM teams WHERE draft_id = $1 ORDER BY pick_order', [draftId]);
-    const expectedIdx = getTeamIndexForPick(draft.current_pick, teams.length, draft.format);
-    if (teams[expectedIdx]?.id !== team.id) {
+    const makePick_ownership = draft.pick_ownership || {};
+    const expectedTeamId = getPickOwner(draft.current_pick, teams, draft.format, makePick_ownership);
+    if (expectedTeamId !== team.id) {
       socket.emit('error', { message: "It's not your turn" });
       return;
     }

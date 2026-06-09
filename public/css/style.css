@@ -831,3 +831,31 @@ body.draft-page {
 .lineup-player-row.is-bench { opacity: 0.65; }
 .lineup-status-icon { font-size: 14px; width: 16px; text-align: center; }
 
+/* ── Draft Trades ─────────────────────────────────────────────────────────── */
+.trade-item {
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  margin-bottom: 4px;
+  cursor: pointer;
+  font-size: 12px;
+  user-select: none;
+  transition: border-color 0.1s, background 0.1s;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.trade-item:hover { border-color: var(--primary); background: var(--surface2); }
+.trade-item.selected { border-color: var(--primary); background: var(--primary-dim); color: var(--primary); }
+.trade-item.selected .pos-badge { background: rgba(88,166,255,0.2); color: var(--primary); }
+.trade-list-item {
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  margin-bottom: 8px;
+}
+.trade-list-item.pending { border-color: var(--warning); }
+.trade-list-item.accepted { border-color: var(--success); }
+.trade-list-item.rejected, .trade-list-item.cancelled { opacity: 0.6; }
+
+
