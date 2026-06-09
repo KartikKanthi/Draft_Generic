@@ -657,6 +657,36 @@ app.post('/api/drafts/:id/join', async (req, res) => {
   res.json({ team_id: teamId, token, pick_order: teamCount });
 });
 
+app.put('/api/drafts/:id/pick-order', async (req, res) => {
+  try {
+    const commToken = req.headers['x-commissioner-token'];
+    const draft = await db.get('SELECT * FROM drafts WHERE id = $1', [req.params.id]);
+    if (!draft) return res.status(404).json({ error: 'Draft not found' });
+    if (draft.commissioner_token !== commToken) return res.status(403).json({ error: 'Unauthorized' });
+    if (draft.status !== 'waiting') return res.status(400).json({ error: 'Cannot reorder after draft has started' });
+
+    const { team_ids } = req.body;
+    if (!Array.isArray(team_ids) || team_ids.length === 0)
+      return res.status(400).json({ error: 'team_ids must be a non-empty array' });
+
+    const teams = await db.all('SELECT id FROM teams WHERE draft_id = $1', [req.params.id]);
+    const validIds = new Set(teams.map(t => t.id));
+    if (team_ids.some(id => !validIds.has(id)))
+      return res.status(400).json({ error: 'Invalid team ID in list' });
+
+    await db.transaction(async (client) => {
+      for (let i = 0; i < team_ids.length; i++) {
+        await client.query('UPDATE teams SET pick_order = $1 WHERE id = $2 AND draft_id = $3',
+          [i, team_ids[i], req.params.id]);
+      }
+    });
+
+    const state = await getDraftState(req.params.id);
+    io.to(`draft:${req.params.id}`).emit('draft-state', state);
+    res.json({ success: true });
+  } catch (err) { console.error(err); res.status(500).json({ error: err.message }); }
+});
+
 app.put('/api/drafts/:id/teams/:teamId/email', async (req, res) => {
   const { token, email } = req.body;
   if (!token) return res.status(400).json({ error: 'token required' });
@@ -1631,17 +1661,12 @@ io.on('connection', (socket) => {
     const draft = await db.get('SELECT * FROM drafts WHERE id = $1', [draftId]);
     if (!draft || draft.commissioner_token !== commissionerToken || draft.status !== 'waiting') return;
 
-    const teams = await db.all('SELECT * FROM teams WHERE draft_id = $1 ORDER BY RANDOM()', [draftId]);
+    const teams = await db.all('SELECT * FROM teams WHERE draft_id = $1 ORDER BY pick_order', [draftId]);
     if (teams.length < 2) { socket.emit('error', { message: 'Need at least 2 teams to start' }); return; }
 
     const countRow = await db.get('SELECT COUNT(*) as c FROM players WHERE draft_id = $1', [draftId]);
     if (parseInt(countRow.c) === 0) { socket.emit('error', { message: 'Upload a player pool before starting' }); return; }
 
-    await db.transaction(async (client) => {
-      for (let i = 0; i < teams.length; i++) {
-        await client.query('UPDATE teams SET pick_order = $1 WHERE id = $2', [i, teams[i].id]);
-      }
-    });
     await db.run('UPDATE drafts SET status = $1, num_teams = $2 WHERE id = $3',
       ['active', teams.length, draftId]);
 

@@ -203,13 +203,55 @@ function renderWaiting() {
   document.getElementById('teams-needed').textContent = state.num_teams;
 
   const grid = document.getElementById('teams-waiting-grid');
-  grid.innerHTML = state.teams.map(t => `
-    <div class="team-waiting-card ${t.id === MY_TEAM_ID ? 'me' : ''}">
-      ${t.id === MY_TEAM_ID ? '★ ' : ''}${escHtml(t.name)}
-    </div>
-  `).join('') + Array.from({ length: Math.max(0, state.num_teams - state.teams.length) }, (_, i) =>
-    `<div class="team-waiting-card" style="opacity:0.3">Empty slot</div>`
-  ).join('');
+  const emptySlots = Array.from({ length: Math.max(0, state.num_teams - state.teams.length) },
+    () => `<div class="team-waiting-card" style="opacity:0.3">Empty slot</div>`).join('');
+
+  if (isCommissioner) {
+    grid.innerHTML = `
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;flex-wrap:wrap">
+        <span style="font-size:12px;color:var(--text-muted)">Set draft order — this is the order teams will pick</span>
+        <button class="btn btn-sm" id="randomize-order-btn">Randomize</button>
+      </div>
+      ${state.teams.map((t, i) => `
+        <div style="display:flex;align-items:center;gap:8px;padding:8px 10px;border:1px solid var(--border);border-radius:var(--radius-sm);margin-bottom:6px;background:var(--surface2)">
+          <span style="font-weight:700;color:var(--text-muted);min-width:22px;text-align:center">${i + 1}</span>
+          <span style="flex:1;font-weight:${t.id === MY_TEAM_ID ? '700' : '400'}">${escHtml(t.name)}${t.id === MY_TEAM_ID ? ' ★' : ''}</span>
+          <button class="btn btn-sm" style="padding:2px 8px" data-move-up="${escHtml(t.id)}" ${i === 0 ? 'disabled' : ''}>↑</button>
+          <button class="btn btn-sm" style="padding:2px 8px" data-move-down="${escHtml(t.id)}" ${i === state.teams.length - 1 ? 'disabled' : ''}>↓</button>
+        </div>
+      `).join('')}
+      ${emptySlots}`;
+
+    grid.querySelector('#randomize-order-btn')?.addEventListener('click', () => {
+      const shuffled = [...state.teams].sort(() => Math.random() - 0.5);
+      savePickOrder(shuffled.map(t => t.id));
+    });
+    grid.querySelectorAll('[data-move-up]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const ids = state.teams.map(t => t.id);
+        const idx = ids.indexOf(btn.dataset.moveUp);
+        if (idx <= 0) return;
+        [ids[idx - 1], ids[idx]] = [ids[idx], ids[idx - 1]];
+        savePickOrder(ids);
+      });
+    });
+    grid.querySelectorAll('[data-move-down]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const ids = state.teams.map(t => t.id);
+        const idx = ids.indexOf(btn.dataset.moveDown);
+        if (idx < 0 || idx >= ids.length - 1) return;
+        [ids[idx], ids[idx + 1]] = [ids[idx + 1], ids[idx]];
+        savePickOrder(ids);
+      });
+    });
+  } else {
+    grid.innerHTML = state.teams.map((t, i) => `
+      <div class="team-waiting-card ${t.id === MY_TEAM_ID ? 'me' : ''}">
+        <span style="color:var(--text-muted);font-size:11px;margin-right:4px">${i + 1}.</span>
+        ${t.id === MY_TEAM_ID ? '★ ' : ''}${escHtml(t.name)}
+      </div>
+    `).join('') + emptySlots;
+  }
 
   const commDiv = document.getElementById('commissioner-waiting');
   if (isCommissioner) {
@@ -921,6 +963,17 @@ document.getElementById('join-as-team-btn')?.addEventListener('click', async () 
     toast(err.message, 'error');
   }
 });
+
+async function savePickOrder(teamIds) {
+  try {
+    const res = await fetch(`/api/drafts/${DRAFT_ID}/pick-order`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', 'x-commissioner-token': COMMISSIONER_TOKEN },
+      body: JSON.stringify({ team_ids: teamIds })
+    });
+    if (!res.ok) { const d = await res.json(); toast(d.error, 'error'); }
+  } catch (err) { toast(err.message, 'error'); }
+}
 
 document.getElementById('start-draft-btn')?.addEventListener('click', () => {
   socket.emit('start-draft', { commissionerToken: COMMISSIONER_TOKEN });
