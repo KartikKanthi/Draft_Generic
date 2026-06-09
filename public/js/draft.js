@@ -479,11 +479,15 @@ function renderDraftBoard(onClockTeam) {
   // Team name row
   let html = `<div class="board-grid" style="grid-template-columns: 32px repeat(${numTeams}, minmax(90px, 1fr))">`;
 
-  // Header row
+  // Header row — highlight the column that physically contains the current pick's cell
+  const clockColIdx = state.status === 'active'
+    ? getTeamIndex(state.current_pick, numTeams, format)
+    : -1;
   html += `<div class="round-label"></div>`;
-  for (const team of teams) {
+  for (let hi = 0; hi < teams.length; hi++) {
+    const team = teams[hi];
     const isMe = team.id === MY_TEAM_ID;
-    const isClock = team.id === onClockTeam?.id;
+    const isClock = hi === clockColIdx;
     let cls = 'board-col-header';
     if (isMe) cls += ' me';
     if (isClock) cls += ' on-clock';
