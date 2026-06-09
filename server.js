@@ -611,6 +611,14 @@ app.delete('/api/drafts/:id', async (req, res) => {
     return res.status(403).json({ error: 'Unauthorized' });
 
   await db.transaction(async (client) => {
+    // Delete leaf tables first (deepest FK dependencies), then parents
+    await client.query(`DELETE FROM stat_entries WHERE league_id IN (SELECT id FROM leagues WHERE draft_id = $1)`, [req.params.id]);
+    await client.query(`DELETE FROM lineups WHERE league_id IN (SELECT id FROM leagues WHERE draft_id = $1)`, [req.params.id]);
+    await client.query(`DELETE FROM trades WHERE league_id IN (SELECT id FROM leagues WHERE draft_id = $1)`, [req.params.id]);
+    await client.query(`DELETE FROM waiver_claims WHERE league_id IN (SELECT id FROM leagues WHERE draft_id = $1)`, [req.params.id]);
+    await client.query(`DELETE FROM rounds WHERE league_id IN (SELECT id FROM leagues WHERE draft_id = $1)`, [req.params.id]);
+    await client.query('DELETE FROM leagues WHERE draft_id = $1', [req.params.id]);
+    await client.query('DELETE FROM draft_trades WHERE draft_id = $1', [req.params.id]);
     await client.query('DELETE FROM bids WHERE draft_id = $1', [req.params.id]);
     await client.query('DELETE FROM players WHERE draft_id = $1', [req.params.id]);
     await client.query('DELETE FROM teams WHERE draft_id = $1', [req.params.id]);
