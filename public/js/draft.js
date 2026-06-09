@@ -411,7 +411,9 @@ function renderPlayerPool(onClockTeam) {
   const myTeamPickCount = state.players.filter(p => p.drafted_by === MY_TEAM_ID).length;
   const pptPool = state.picks_per_team || 0;
   const mySquadFull = pptPool > 0 && myTeamPickCount >= pptPool;
-  const isMyTurn = onClockTeam?.id === MY_TEAM_ID && !mySquadFull;
+  const isMyTurn = onClockTeam && (
+    (onClockTeam.id === MY_TEAM_ID && !mySquadFull) || isCommissioner
+  );
 
   const list = document.getElementById('player-list');
   list.innerHTML = filtered.map(p => {
@@ -829,14 +831,21 @@ function showPickModal(playerId) {
   const player = state.players.find(p => p.id === playerId);
   if (!player) return;
   pendingPickId = playerId;
+  const onClock = getOnClockTeam();
+  const forTeam = isCommissioner && onClock?.id !== MY_TEAM_ID
+    ? ` for ${onClock?.name}` : '';
   document.getElementById('pick-modal-text').textContent =
-    `Draft ${player.name}${player.position ? ` (${player.position})` : ''}?`;
+    `Draft ${player.name}${player.position ? ` (${player.position})` : ''}${forTeam}?`;
   document.getElementById('pick-modal').style.display = 'flex';
 }
 
 document.getElementById('pick-confirm-btn').addEventListener('click', () => {
   if (!pendingPickId) return;
-  socket.emit('make-pick', { teamToken: MY_TEAM_TOKEN, playerId: pendingPickId });
+  if (isCommissioner) {
+    socket.emit('make-pick', { commissionerToken: COMMISSIONER_TOKEN, playerId: pendingPickId });
+  } else {
+    socket.emit('make-pick', { teamToken: MY_TEAM_TOKEN, playerId: pendingPickId });
+  }
   pendingPickId = null;
   document.getElementById('pick-modal').style.display = 'none';
 });

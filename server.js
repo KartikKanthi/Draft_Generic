@@ -1676,12 +1676,22 @@ io.on('connection', (socket) => {
     }
   });
 
-  socket.on('make-pick', async ({ teamToken, playerId }) => {
+  socket.on('make-pick', async ({ teamToken, commissionerToken, playerId }) => {
     const { draftId } = socket.data;
     if (!draftId) return;
 
     const draft = await db.get('SELECT * FROM drafts WHERE id = $1', [draftId]);
     if (!draft || draft.status !== 'active' || draft.format === 'auction') return;
+
+    // Commissioner can pick for whoever is on the clock
+    if (commissionerToken) {
+      if (draft.commissioner_token !== commissionerToken) {
+        socket.emit('error', { message: 'Invalid commissioner token' });
+        return;
+      }
+      await processPick(draftId, playerId, null, false);
+      return;
+    }
 
     const team = await db.get('SELECT * FROM teams WHERE draft_id = $1 AND token = $2', [draftId, teamToken]);
     if (!team) return;
