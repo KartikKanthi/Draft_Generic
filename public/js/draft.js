@@ -524,10 +524,11 @@ function renderDraftBoard(onClockTeam) {
         if (pick.position) html += `<div class="cell-pos">${escHtml(pick.position)}</div>`;
         if (pick.bid_amount) html += `<div class="cell-pos">$${pick.bid_amount}</div>`;
         if (isDraftedByOther) html += `<div class="cell-traded-tag" title="Pick traded to ${escHtml(draftedByTeam?.name || '?')}">⇄ ${escHtml(draftedByTeam?.name || '?')}</div>`;
+      } else if (isTradedAway) {
+        // Traded pick: show new owner regardless of whether it's the current pick
+        html += `<div class="cell-traded-tag">⇄ ${escHtml(tradedToTeam?.name || '?')}</div>`;
       } else if (isClock) {
         html += `<div class="cell-pos" style="color:var(--primary)">On the clock…</div>`;
-      } else if (isTradedAway) {
-        html += `<div class="cell-traded-tag">⇄ ${escHtml(tradedToTeam?.name || '?')}</div>`;
       }
       html += `</div>`;
     }
