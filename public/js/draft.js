@@ -481,7 +481,7 @@ function renderDraftBoard(onClockTeam) {
 
   // Header row — highlight the column that physically contains the current pick's cell
   const clockColIdx = state.status === 'active'
-    ? getTeamIndex(state.current_pick, numTeams, format)
+    ? getTeamIndex(state.current_pick, numTeams, state.format)
     : -1;
   html += `<div class="round-label"></div>`;
   for (let hi = 0; hi < teams.length; hi++) {
