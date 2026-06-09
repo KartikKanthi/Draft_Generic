@@ -503,18 +503,31 @@ function renderDraftBoard(onClockTeam) {
       const isClock = pickNum === state.current_pick;
       const pick = pickMap[pickNum];
 
+      // Trade ownership
+      const boardOwnership = state.pick_ownership || {};
+      const naturalOwnerId = team?.id;
+      const currentOwnerId = boardOwnership[String(pickNum)] || naturalOwnerId;
+      const isTradedAway = !pick && currentOwnerId !== naturalOwnerId;
+      const tradedToTeam = isTradedAway ? teams.find(t => t.id === currentOwnerId) : null;
+      const isDraftedByOther = pick && pick.drafted_by !== naturalOwnerId;
+      const draftedByTeam = isDraftedByOther ? teams.find(t => t.id === pick.drafted_by) : null;
+
       let cls = 'board-cell';
       if (!pick) cls += ' empty';
       if (isMe) cls += ' me';
       if (isClock && !pick) cls += ' on-clock';
+      if (isTradedAway) cls += ' traded-away';
 
       html += `<div class="${cls}">`;
       if (pick) {
         html += `<div class="cell-player">${escHtml(pick.name)}</div>`;
         if (pick.position) html += `<div class="cell-pos">${escHtml(pick.position)}</div>`;
         if (pick.bid_amount) html += `<div class="cell-pos">$${pick.bid_amount}</div>`;
+        if (isDraftedByOther) html += `<div class="cell-traded-tag" title="Pick traded to ${escHtml(draftedByTeam?.name || '?')}">⇄ ${escHtml(draftedByTeam?.name || '?')}</div>`;
       } else if (isClock) {
         html += `<div class="cell-pos" style="color:var(--primary)">On the clock…</div>`;
+      } else if (isTradedAway) {
+        html += `<div class="cell-traded-tag">⇄ ${escHtml(tradedToTeam?.name || '?')}</div>`;
       }
       html += `</div>`;
     }
