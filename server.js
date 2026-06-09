@@ -1464,12 +1464,12 @@ app.post('/api/drafts/:id/trades', async (req, res) => {
     const pickOwnership = draft.pick_ownership || {};
 
     for (const pn of offered_pick_numbers) {
-      if (pn <= draft.current_pick) return res.status(400).json({ error: `Pick ${pn + 1} has already been made` });
+      if (pn < draft.current_pick) return res.status(400).json({ error: `Pick ${pn + 1} has already been made` });
       if (getPickOwner(pn, teams, draft.format, pickOwnership) !== proposingTeam.id)
         return res.status(400).json({ error: `Pick ${pn + 1} does not belong to your team` });
     }
     for (const pn of requested_pick_numbers) {
-      if (pn <= draft.current_pick) return res.status(400).json({ error: `Pick ${pn + 1} has already been made` });
+      if (pn < draft.current_pick) return res.status(400).json({ error: `Pick ${pn + 1} has already been made` });
       if (getPickOwner(pn, teams, draft.format, pickOwnership) !== receivingTeam.id)
         return res.status(400).json({ error: `Pick ${pn + 1} does not belong to ${receivingTeam.name}` });
     }
@@ -1546,12 +1546,12 @@ app.put('/api/drafts/:id/trades/:tradeId', async (req, res) => {
     const pickOwnership = draft.pick_ownership || {};
 
     for (const pn of trade.offered_pick_numbers) {
-      if (pn <= draft.current_pick) return res.status(400).json({ error: `Pick ${pn + 1} has already been made` });
+      if (pn < draft.current_pick) return res.status(400).json({ error: `Pick ${pn + 1} has already been made` });
       if (getPickOwner(pn, teams, draft.format, pickOwnership) !== trade.proposing_team_id)
         return res.status(400).json({ error: 'Pick ownership changed since trade was proposed' });
     }
     for (const pn of trade.requested_pick_numbers) {
-      if (pn <= draft.current_pick) return res.status(400).json({ error: `Pick ${pn + 1} has already been made` });
+      if (pn < draft.current_pick) return res.status(400).json({ error: `Pick ${pn + 1} has already been made` });
       if (getPickOwner(pn, teams, draft.format, pickOwnership) !== trade.receiving_team_id)
         return res.status(400).json({ error: 'Pick ownership changed since trade was proposed' });
     }

@@ -1012,7 +1012,7 @@ function getTeamFuturePicks(teamId) {
   const totalPicks = numTeams * ppt;
   const ownership = pick_ownership || {};
   const result = [];
-  for (let p = current_pick + 1; p < totalPicks; p++) {
+  for (let p = current_pick; p < totalPicks; p++) {
     const ownerId = ownership[String(p)] || teams[getTeamIndex(p, numTeams, format)]?.id;
     if (ownerId === teamId) {
       const round = Math.floor(p / numTeams) + 1;
