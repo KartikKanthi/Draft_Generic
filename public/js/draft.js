@@ -347,12 +347,12 @@ function renderActive() {
   // Commissioner controls
   const commDraftControls = document.getElementById('commissioner-draft-controls');
   commDraftControls.style.display = isCommissioner ? 'flex' : 'none';
+  const showTimerBtns = isCommissioner && state.status === 'active' && state.pick_timer > 0 && state.format !== 'auction' &&
+    (state.mode === 'live' || (state.mode === 'async' && state.pick_deadline));
   const reduceTimeBtn = document.getElementById('reduce-time-btn');
-  if (reduceTimeBtn) {
-    const showReduce = isCommissioner && state.status === 'active' && state.pick_timer > 0 && state.format !== 'auction' &&
-      (state.mode === 'live' || (state.mode === 'async' && state.pick_deadline));
-    reduceTimeBtn.style.display = showReduce ? '' : 'none';
-  }
+  if (reduceTimeBtn) reduceTimeBtn.style.display = showTimerBtns ? '' : 'none';
+  const setTimerBtn = document.getElementById('set-timer-btn');
+  if (setTimerBtn) setTimerBtn.style.display = showTimerBtns ? '' : 'none';
 }
 
 function renderStatusBar(onClockTeam) {
@@ -998,6 +998,24 @@ document.getElementById('reduce-time-btn')?.addEventListener('click', () => {
     const secs = parseInt(input);
     if (!secs || secs <= 0) { alert('Enter a positive number of seconds.'); return; }
     socket.emit('reduce-pick-time', { commissionerToken: COMMISSIONER_TOKEN, seconds: secs });
+  }
+});
+
+document.getElementById('set-timer-btn')?.addEventListener('click', () => {
+  if (state?.mode === 'async') {
+    const current = state.pick_timer;
+    const input = prompt(`Set new pick deadline for all future picks (hours).\nCurrent: ${current}h`, current);
+    if (input === null) return;
+    const hrs = parseInt(input);
+    if (!hrs || hrs <= 0) { alert('Enter a positive number of hours.'); return; }
+    socket.emit('set-pick-timer', { commissionerToken: COMMISSIONER_TOKEN, hours: hrs });
+  } else {
+    const current = state.pick_timer;
+    const input = prompt(`Set new pick timer for all future picks (seconds).\nCurrent: ${current}s`, current);
+    if (input === null) return;
+    const secs = parseInt(input);
+    if (!secs || secs <= 0) { alert('Enter a positive number of seconds.'); return; }
+    socket.emit('set-pick-timer', { commissionerToken: COMMISSIONER_TOKEN, seconds: secs });
   }
 });
 

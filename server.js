@@ -1882,6 +1882,26 @@ io.on('connection', (socket) => {
     }
   });
 
+  socket.on('set-pick-timer', async ({ commissionerToken, seconds, hours }) => {
+    const { draftId } = socket.data;
+    if (!draftId) return;
+    const draft = await db.get('SELECT * FROM drafts WHERE id = $1', [draftId]);
+    if (!draft || draft.commissioner_token !== commissionerToken) return;
+    if (draft.status !== 'active' || draft.format === 'auction') return;
+
+    if (draft.mode === 'live') {
+      const newTimer = Math.max(1, parseInt(seconds) || 90);
+      await db.run('UPDATE drafts SET pick_timer = $1 WHERE id = $2', [newTimer, draftId]);
+      await startPickTimer(draftId);
+    } else if (draft.mode === 'async') {
+      const newTimer = Math.max(1, parseInt(hours) || 24);
+      await db.run('UPDATE drafts SET pick_timer = $1 WHERE id = $2', [newTimer, draftId]);
+      await setSlowPickDeadlineAndNotify(draftId, draft.current_pick);
+    }
+    const state = await getDraftState(draftId);
+    io.to(`draft:${draftId}`).emit('draft-state', state);
+  });
+
   socket.on('reduce-pick-time', async ({ commissionerToken, seconds, minutes }) => {
     const { draftId } = socket.data;
     if (!draftId) return;
