@@ -1882,6 +1882,34 @@ io.on('connection', (socket) => {
     }
   });
 
+  socket.on('undo-last-pick', async ({ commissionerToken }) => {
+    const { draftId } = socket.data;
+    if (!draftId) return;
+    const draft = await db.get('SELECT * FROM drafts WHERE id = $1', [draftId]);
+    if (!draft || draft.commissioner_token !== commissionerToken) return;
+    if (draft.format === 'auction') return;
+    if (draft.status !== 'active' && draft.status !== 'completed') return;
+
+    const lastPick = await db.get(
+      'SELECT * FROM players WHERE draft_id = $1 AND pick_number IS NOT NULL ORDER BY pick_number DESC LIMIT 1',
+      [draftId]
+    );
+    if (!lastPick) return;
+
+    await db.run('UPDATE players SET drafted_by = NULL, pick_number = NULL WHERE id = $1', [lastPick.id]);
+    await db.run(
+      "UPDATE drafts SET status = 'active', current_pick = $1, pick_deadline = NULL WHERE id = $2",
+      [lastPick.pick_number, draftId]
+    );
+
+    clearPickTimer(draftId);
+    if (draft.mode === 'live' && draft.pick_timer > 0) await startPickTimer(draftId);
+    else if (draft.mode === 'async' && draft.pick_timer > 0) await setSlowPickDeadlineAndNotify(draftId, lastPick.pick_number);
+
+    const state = await getDraftState(draftId);
+    io.to(`draft:${draftId}`).emit('draft-state', state);
+  });
+
   socket.on('set-pick-timer', async ({ commissionerToken, seconds, hours }) => {
     const { draftId } = socket.data;
     if (!draftId) return;

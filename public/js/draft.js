@@ -353,6 +353,11 @@ function renderActive() {
   if (reduceTimeBtn) reduceTimeBtn.style.display = showTimerBtns ? '' : 'none';
   const setTimerBtn = document.getElementById('set-timer-btn');
   if (setTimerBtn) setTimerBtn.style.display = showTimerBtns ? '' : 'none';
+  const undoPickBtn = document.getElementById('undo-pick-btn');
+  if (undoPickBtn) {
+    const showUndo = isCommissioner && state.format !== 'auction' && (state.status === 'active' || state.status === 'completed') && state.current_pick > 0;
+    undoPickBtn.style.display = showUndo ? '' : 'none';
+  }
 }
 
 function renderStatusBar(onClockTeam) {
@@ -999,6 +1004,11 @@ document.getElementById('reduce-time-btn')?.addEventListener('click', () => {
     if (!secs || secs <= 0) { alert('Enter a positive number of seconds.'); return; }
     socket.emit('reduce-pick-time', { commissionerToken: COMMISSIONER_TOKEN, seconds: secs });
   }
+});
+
+document.getElementById('undo-pick-btn')?.addEventListener('click', () => {
+  if (!confirm('Undo the last pick? The player will be returned to the pool.')) return;
+  socket.emit('undo-last-pick', { commissionerToken: COMMISSIONER_TOKEN });
 });
 
 document.getElementById('set-timer-btn')?.addEventListener('click', () => {
