@@ -349,7 +349,8 @@ function renderActive() {
   commDraftControls.style.display = isCommissioner ? 'flex' : 'none';
   const reduceTimeBtn = document.getElementById('reduce-time-btn');
   if (reduceTimeBtn) {
-    const showReduce = isCommissioner && state.status === 'active' && state.mode === 'live' && state.pick_timer > 0 && state.format !== 'auction';
+    const showReduce = isCommissioner && state.status === 'active' && state.pick_timer > 0 && state.format !== 'auction' &&
+      (state.mode === 'live' || (state.mode === 'async' && state.pick_deadline));
     reduceTimeBtn.style.display = showReduce ? '' : 'none';
   }
 }
@@ -985,11 +986,19 @@ document.getElementById('start-draft-btn')?.addEventListener('click', () => {
 });
 
 document.getElementById('reduce-time-btn')?.addEventListener('click', () => {
-  const input = prompt('Reduce current pick timer by how many seconds?', '30');
-  if (input === null) return;
-  const secs = parseInt(input);
-  if (!secs || secs <= 0) { alert('Enter a positive number of seconds.'); return; }
-  socket.emit('reduce-pick-time', { commissionerToken: COMMISSIONER_TOKEN, seconds: secs });
+  if (state?.mode === 'async') {
+    const input = prompt('Reduce current pick deadline by how many minutes?', '30');
+    if (input === null) return;
+    const mins = parseInt(input);
+    if (!mins || mins <= 0) { alert('Enter a positive number of minutes.'); return; }
+    socket.emit('reduce-pick-time', { commissionerToken: COMMISSIONER_TOKEN, minutes: mins });
+  } else {
+    const input = prompt('Reduce current pick timer by how many seconds?', '30');
+    if (input === null) return;
+    const secs = parseInt(input);
+    if (!secs || secs <= 0) { alert('Enter a positive number of seconds.'); return; }
+    socket.emit('reduce-pick-time', { commissionerToken: COMMISSIONER_TOKEN, seconds: secs });
+  }
 });
 
 document.getElementById('end-draft-btn')?.addEventListener('click', () => {

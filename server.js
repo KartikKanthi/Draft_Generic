@@ -1882,19 +1882,28 @@ io.on('connection', (socket) => {
     }
   });
 
-  socket.on('reduce-pick-time', async ({ commissionerToken, seconds }) => {
+  socket.on('reduce-pick-time', async ({ commissionerToken, seconds, minutes }) => {
     const { draftId } = socket.data;
     if (!draftId) return;
     const draft = await db.get('SELECT * FROM drafts WHERE id = $1', [draftId]);
     if (!draft || draft.commissioner_token !== commissionerToken) return;
-    if (draft.status !== 'active' || draft.mode !== 'live' || draft.pick_timer === 0 || draft.format === 'auction') return;
+    if (draft.status !== 'active' || draft.pick_timer === 0 || draft.format === 'auction') return;
 
-    const entry = activeTimers.get(draftId);
-    if (!entry) return;
-
-    const reductionMs = Math.max(1, parseInt(seconds) || 30) * 1000;
-    const newEndsAt = Math.max(Date.now() + 1000, entry.endsAt - reductionMs);
-    await startPickTimer(draftId, newEndsAt);
+    if (draft.mode === 'live') {
+      const entry = activeTimers.get(draftId);
+      if (!entry) return;
+      const reductionMs = Math.max(1, parseInt(seconds) || 30) * 1000;
+      const newEndsAt = Math.max(Date.now() + 1000, entry.endsAt - reductionMs);
+      await startPickTimer(draftId, newEndsAt);
+    } else if (draft.mode === 'async' && draft.pick_deadline) {
+      const reductionMs = Math.max(1, parseInt(minutes) || 30) * 60 * 1000;
+      const currentDeadline = new Date(draft.pick_deadline).getTime();
+      const newDeadline = Math.max(Date.now() + 60 * 1000, currentDeadline - reductionMs);
+      await db.run('UPDATE drafts SET pick_deadline = $1 WHERE id = $2', [new Date(newDeadline).toISOString(), draftId]);
+      await startSlowPickDeadline(draftId);
+      const state = await getDraftState(draftId);
+      io.to(`draft:${draftId}`).emit('draft-state', state);
+    }
   });
 
   socket.on('complete-draft', async ({ commissionerToken }) => {
