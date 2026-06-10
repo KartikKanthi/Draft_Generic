@@ -1882,6 +1882,21 @@ io.on('connection', (socket) => {
     }
   });
 
+  socket.on('reduce-pick-time', async ({ commissionerToken, seconds }) => {
+    const { draftId } = socket.data;
+    if (!draftId) return;
+    const draft = await db.get('SELECT * FROM drafts WHERE id = $1', [draftId]);
+    if (!draft || draft.commissioner_token !== commissionerToken) return;
+    if (draft.status !== 'active' || draft.mode !== 'live' || draft.pick_timer === 0 || draft.format === 'auction') return;
+
+    const entry = activeTimers.get(draftId);
+    if (!entry) return;
+
+    const reductionMs = Math.max(1, parseInt(seconds) || 30) * 1000;
+    const newEndsAt = Math.max(Date.now() + 1000, entry.endsAt - reductionMs);
+    await startPickTimer(draftId, newEndsAt);
+  });
+
   socket.on('complete-draft', async ({ commissionerToken }) => {
     const { draftId } = socket.data;
     if (!draftId) return;

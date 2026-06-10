@@ -347,6 +347,11 @@ function renderActive() {
   // Commissioner controls
   const commDraftControls = document.getElementById('commissioner-draft-controls');
   commDraftControls.style.display = isCommissioner ? 'flex' : 'none';
+  const reduceTimeBtn = document.getElementById('reduce-time-btn');
+  if (reduceTimeBtn) {
+    const showReduce = isCommissioner && state.status === 'active' && state.mode === 'live' && state.pick_timer > 0 && state.format !== 'auction';
+    reduceTimeBtn.style.display = showReduce ? '' : 'none';
+  }
 }
 
 function renderStatusBar(onClockTeam) {
@@ -977,6 +982,14 @@ async function savePickOrder(teamIds) {
 
 document.getElementById('start-draft-btn')?.addEventListener('click', () => {
   socket.emit('start-draft', { commissionerToken: COMMISSIONER_TOKEN });
+});
+
+document.getElementById('reduce-time-btn')?.addEventListener('click', () => {
+  const input = prompt('Reduce current pick timer by how many seconds?', '30');
+  if (input === null) return;
+  const secs = parseInt(input);
+  if (!secs || secs <= 0) { alert('Enter a positive number of seconds.'); return; }
+  socket.emit('reduce-pick-time', { commissionerToken: COMMISSIONER_TOKEN, seconds: secs });
 });
 
 document.getElementById('end-draft-btn')?.addEventListener('click', () => {
